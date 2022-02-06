@@ -2,10 +2,8 @@ import argparse
 import functools
 import os
 
-# from torchvision.utils import save_image
 import torch
 import numpy as np
-import matplotlib
 import torchvision
 import torch.nn.functional
 import matplotlib.pyplot as plt
@@ -13,7 +11,6 @@ import torch.utils.data
 from scipy.ndimage import gaussian_filter1d
 from sklearn.datasets import fetch_lfw_people
 from sklearn.model_selection import train_test_split
-from sklearn.utils import class_weight
 from torchvision import transforms
 from tqdm import tqdm
 from datetime import datetime
@@ -32,16 +29,16 @@ parser.add_argument('-batch_size', default=16, type=int)
 parser.add_argument('-epochs', default=10, type=int)
 args = parser.parse_args()
 
-
-
 BATCH_SIZE = 64
 n_classes = 0
 n_names = []
 weights = []
 MAX_LEN = 200
+TOTAL_CLASSES_CONF_MATRIX = 5
 DEVICE = 'cpu'
 if torch.cuda.is_available():
     DEVICE = 'cuda'
+
 
 class LoadDataset(torch.utils.data.Dataset):
     def __init__(self, transform=None):
@@ -51,7 +48,7 @@ class LoadDataset(torch.utils.data.Dataset):
         self.transform = transform
 
         super().__init__()
-        self.data = fetch_lfw_people(color=True, min_faces_per_person=80)
+        self.data = fetch_lfw_people(color=True, min_faces_per_person=30)
         n_classes = self.data.target_names.size
         n_names = self.data.target_names
 
@@ -69,7 +66,7 @@ class LoadDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         np_x = self.data.images[idx]
         x = torch.FloatTensor(np_x)
-        x = torch.permute(x, (2,0,1))
+        x = torch.permute(x, (2, 0, 1))
         y = self.data.target[idx]
 
         if self.transform:
@@ -98,8 +95,6 @@ subset_train_data, subset_test_data = train_test_split(
 dataset_train = torch.utils.data.Subset(dataset, subset_train_data)
 dataset_test = torch.utils.data.Subset(dataset, subset_test_data)
 
-
-
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
@@ -116,7 +111,7 @@ data_loader_test = torch.utils.data.DataLoader(
 
 
 class DenseBlock(torch.nn.Module):
-    def __init__(self, in_features, num_chains = 4):
+    def __init__(self, in_features, num_chains=4):
         super().__init__()
 
         self.chains = []
@@ -148,6 +143,7 @@ class DenseBlock(torch.nn.Module):
             inp = torch.cat(list_out, dim=1)
         return inp
 
+
 class TransitionLayer(torch.nn.Module):
     def __init__(self, in_features, out_features):
         super().__init__()
@@ -173,8 +169,10 @@ class Reshape(torch.nn.Module):
     def __init__(self, target_shape):
         super().__init__()
         self.target_shape = target_shape
-    def forward(self,x ):
+
+    def forward(self, x):
         return x.view(self.target_shape)
+
 
 class View_Result(torch.nn.Module):
     def __init__(self):
@@ -186,17 +184,19 @@ class View_Result(torch.nn.Module):
         if self.training:
             # if self.l % 10 == 0:
             inp = torch.nn.functional.adaptive_avg_pool3d(x.detach().cpu(), 3)
-            img = make_grid_with_labels(tensor= inp,
+            img = make_grid_with_labels(tensor=inp,
                                         labels=n_names)
             show(img, self.l)
 
-            self.l +=1
+            self.l += 1
         return x_out
+
 
 def quick_show(tensor):
     img = make_grid_with_labels(tensor=tensor,
                                 labels=n_names)
     show(img, 0)
+
 
 class DenseNet(torch.nn.Module):
     def __init__(self):
@@ -214,7 +214,7 @@ class DenseNet(torch.nn.Module):
             # torch.nn.MaxPool2d(kernel_size=7,
             #                    stride=2 ),
             DenseBlock(in_features=num_channels),
-            TransitionLayer(in_features=num_channels+num_chains*num_channels, out_features=num_channels),
+            TransitionLayer(in_features=num_channels + num_chains * num_channels, out_features=num_channels),
             DenseBlock(in_features=num_channels),
             TransitionLayer(in_features=num_channels + num_chains * num_channels, out_features=num_channels),
 
@@ -234,24 +234,27 @@ class DenseNet(torch.nn.Module):
         soft = torch.softmax(output, dim=1)
         return soft
 
+
 model = DenseNet()
 model = model.to(DEVICE)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=1e-4)
 
-
-class_weight_manual_indian=[]
+class_weight_manual_indian = []
 for name in weights:
-    class_weight_manual_indian.append(len(dataset.data.data)/(n_classes * weights[name]))
+    class_weight_manual_indian.append(len(dataset.data.data) / (n_classes * weights[name]))
 class_weight_manual_indian = torch.FloatTensor(class_weight_manual_indian).to(DEVICE)
+
+
 #
 # def get_top_10_classes(conf_matrix):
 #     maxtrix = np.argmin(conf_matrix, axis=)
 
-def show(img, l = None):
+def show(img, l=None):
     if not l:
         l = 'check'
     npimg = img.cpu().numpy()
-    plt.imsave(f'dense_test_{l}.png',np.transpose(npimg, (1, 2, 0)))
+    plt.imsave(f'dense_test_{l}.png', np.transpose(npimg, (1, 2, 0)))
+
 
 metrics = {}
 for stage in ['train', 'test']:
@@ -286,27 +289,43 @@ for epoch in tqdm(range(1, 500)):
             y = y.to(DEVICE)
 
             y_prim = model.forward(x)
-            loss = -torch.sum(class_weight_manual_indian[y]*torch.log(y_prim[range(len(x)), y[range(len(x))]] + 1e-8))
+            loss = -torch.sum(class_weight_manual_indian[y] * torch.log(y_prim[range(len(x)), y[range(len(x))]] + 1e-8))
 
             y_prim_matrix = np.argmax(y_prim.cpu().detach().numpy(), axis=1)
             y_matrix = y.cpu().detach().numpy()
             for i in range(len(y)):
                 conf_matrix[y_matrix[i]][y_prim_matrix[i]] += 1
 
-            metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())# Tensor(0.1) => 0.1f
+            metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())  # Tensor(0.1) => 0.1f
 
             if data_loader == data_loader_train:
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-        # conf_matrix = get_top_10_classes(conf_matrix)
+                train_loss = metrics_epoch[f'train_loss'].copy()
 
-        for i in range(n_classes):
-            TP = conf_matrix[i][i]
-            FP = np.sum(np.delete(conf_matrix[i,:], i))
-            FN = np.sum(np.delete(conf_matrix[:,i], i))
-            score = 2*TP/(2*TP + FP + FN + 1e-9)
+        total_conf_matrix = conf_matrix.copy()
+
+        dict_matrix = {}
+        for i in range(len(conf_matrix)):
+            dict_matrix[i] = conf_matrix[i][i]
+        dict_matrix = sorted(dict_matrix.items(), key=lambda x: x[1], reverse=True)
+        for i, el in enumerate(dict_matrix[TOTAL_CLASSES_CONF_MATRIX:]):
+            conf_matrix[:, el[0]] = np.ones_like(conf_matrix[:, el[0]]) * -1
+            conf_matrix[el[0]] = np.ones_like(conf_matrix[el[0]]) * -1
+
+        conf_matrix[conf_matrix < 0] = np.nan
+        conf_matrix = conf_matrix[:, ~np.isnan(conf_matrix).all(axis=0)]
+        conf_matrix = conf_matrix[~np.isnan(conf_matrix).all(axis=1), :]
+
+        for i in range(len(total_conf_matrix)):
+            TP = total_conf_matrix[i][i]
+            FP = np.sum(np.delete(total_conf_matrix[i, :], i))
+            FN = np.sum(np.delete(total_conf_matrix[:, i], i))
+            score = 2 * TP / (2 * TP + FP + FN + 1e-9)
             metrics_epoch[f'{stage}_f1'].append(score)
+            if data_loader == data_loader_train:
+                train_f1 = metrics_epoch[f'train_f1'].copy()
 
         if data_loader is data_loader_train:
             matrices['conf_matrix_train'] = conf_matrix
@@ -333,22 +352,38 @@ for epoch in tqdm(range(1, 500)):
     plt.legend(plts, [it.get_label() for it in plts])
     plt.savefig(f'{args.seq_name}/{args.run_name}/plot_densenet_weighted_lfw.png')
 
-    metrics_epoch[f'{stage}_loss'] = np.mean(metrics_epoch[f'{stage}_loss'])
-    metrics_epoch[f'{stage}_f1'] = np.mean(metrics_epoch[f'{stage}_f1'])
+    metrics_epoch[f'train_loss'] = np.mean(train_loss)
+    metrics_epoch[f'train_f1'] = np.mean(train_f1)
+    metrics_epoch[f'test_loss'] = np.mean(metrics_epoch[f'test_loss'])
+    metrics_epoch[f'test_f1'] = np.mean(metrics_epoch[f'test_f1'])
 
+    label_names = []
+    for idx_tuple in dict_matrix[:TOTAL_CLASSES_CONF_MATRIX]:
+        idx = idx_tuple[0]
+        label_names.append(n_names[idx])
 
     summary_writer.add_scalar(
-        tag=f'{stage}_loss',
-        scalar_value=metrics_epoch[f'{stage}_loss'],
+        tag=f'train_loss',
+        scalar_value=metrics_epoch[f'train_loss'],
+        global_step=epoch
+    )
+    summary_writer.add_scalar(
+        tag=f'test_loss',
+        scalar_value=metrics_epoch[f'test_loss'],
         global_step=epoch
     )
 
     summary_writer.add_scalar(
-        tag=f'{stage}_f1',
-        scalar_value=metrics_epoch[f'{stage}_f1'],
+        tag=f'train_f1',
+        scalar_value=metrics_epoch[f'train_f1'],
         global_step=epoch
     )
 
+    summary_writer.add_scalar(
+        tag=f'test_f1',
+        scalar_value=metrics_epoch[f'test_f1'],
+        global_step=epoch
+    )
     summary_writer.add_hparams(
         hparam_dict=args.__dict__,
         metric_dict={
@@ -358,13 +393,14 @@ for epoch in tqdm(range(1, 500)):
         global_step=epoch
     )
 
+
     fig = plt.figure()
     plt.imshow(matrices['conf_matrix_train'], interpolation='nearest',
                cmap=plt.get_cmap('Greys'))
-    plt.xticks(list(range(n_classes)), n_names.tolist())
-    plt.yticks(list(range(n_classes)), n_names.tolist())
-    for x in range(n_classes):
-        for y in range(n_classes):
+    plt.xticks(list(range(TOTAL_CLASSES_CONF_MATRIX)), label_names)
+    plt.yticks(list(range(TOTAL_CLASSES_CONF_MATRIX)), label_names)
+    for x in range(TOTAL_CLASSES_CONF_MATRIX):
+        for y in range(TOTAL_CLASSES_CONF_MATRIX):
             plt.annotate(
                 str(conf_matrix[x, y]), xy=(y, x),
                 horizontalalignment='center',
@@ -384,10 +420,10 @@ for epoch in tqdm(range(1, 500)):
     fig = plt.figure()
     plt.imshow(matrices['conf_matrix_test'], interpolation='nearest',
                cmap=plt.get_cmap('Greys'))
-    plt.xticks(list(range(n_classes)), n_names.tolist())
-    plt.yticks(list(range(n_classes)), n_names.tolist())
-    for x in range(n_classes):
-        for y in range(n_classes):
+    plt.xticks(list(range(TOTAL_CLASSES_CONF_MATRIX)), label_names)
+    plt.yticks(list(range(TOTAL_CLASSES_CONF_MATRIX)), label_names)
+    for x in range(TOTAL_CLASSES_CONF_MATRIX):
+        for y in range(TOTAL_CLASSES_CONF_MATRIX):
             plt.annotate(
                 str(conf_matrix[x, y]), xy=(y, x),
                 horizontalalignment='center',
@@ -417,5 +453,3 @@ for epoch in tqdm(range(1, 500)):
 summary_writer.close()
 
 plt.savefig(f'{args.seq_name}/{args.run_name}/plot_densenet_weighted_lfw.png')
-
-

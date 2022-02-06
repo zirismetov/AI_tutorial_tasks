@@ -1,19 +1,12 @@
-import numpy.linalg
-import torch.nn.functional as F
-from sklearn.decomposition import PCA
 import torch
 import numpy as np
 import torchvision.transforms as tf
-import matplotlib
-import scipy.ndimage
-from scipy.spatial.distance import cosine
 import torchvision
 import torch.utils.data
 import matplotlib.pyplot as plt
 plt.rcParams["figure.figsize"] = (12,5)
 
 model_path= './pre_trained_weights.pt'
-
 
 class Autoencoder(torch.nn.Module):
     def __init__(self):
@@ -63,8 +56,6 @@ class Autoencoder(torch.nn.Module):
         out = self.encoder(x)
         out = self.decoder(out)
         return out
-
-
 # make model instance
 model = Autoencoder()
 
@@ -80,10 +71,9 @@ def normalize(data):
         data = ((data - data_min) / (data_max - data_min))
     return data
 
-
 # tasks on full dataset
 dataset =torchvision.datasets.EMNIST(
-    root='/data',
+    root='C:/Users/Kekuzbek/PycharmProjects/AI_tutorial_tasks/data',
     split='bymerge',
     train=False,
     download=True,
@@ -104,56 +94,49 @@ for idx in range(len(dataset.classes)):
 
 samples_to_remove = sorted(samples_to_remove, reverse=True)
 for idx in samples_to_remove:
-    if idx == 0:
-        break
-    x = torch.cat((x[:,:idx], x[:,idx+1:]), axis=1)
+    if idx != 0:
+        x = torch.cat((x[:,:idx], x[:,idx+1:]), axis=1)
 
 # process reference images
 with torch.no_grad():
     refence_embedding = model.encoder(reference_images)
     refence_embedding_flat = refence_embedding.view(refence_embedding.size(0), -1)
+    reference_decoded = model.decoder(refence_embedding_flat.view(-1,32,1,1))
+
 
 # a lot of first samples will be duplicates from reference images
-for idx, sample in enumerate(x):
-    if idx == 0:
-        continue
+for sample_number, sample in enumerate(x):
     sample = sample.view(1,1,28,28)
-    sample = model.encoder(sample)
-    s = model.decoder(sample)
+    sample_decoded = model.forward(sample)
 
-    reference = model.decoder(refence_embedding.view(-1,32,1,1))
-
-    dist = {}
-    min_id = {'el':1}
-
-    for idx in range(len(reference)):
-        u = s.detach().view(-1).numpy()
-        v = reference[idx].detach().view(-1).numpy()
+    # calculate cosine distance for each reference image
+    dist_distances = {}
+    for idx in range(len(reference_decoded)):
+        u = sample_decoded.detach().view(-1).numpy()
+        v = reference_decoded[idx].detach().view(-1).numpy()
         denominator = (np.sqrt(np.sum((u**2))) * np.sqrt(np.sum((v**2))))
         distance = np.mean(1 - ((u @ v) / denominator ))
+        # select only close to zero values
         if 0< distance < 1:
-            dist[idx] = distance
+            dist_distances[idx] = distance
 
-    # loss = torch.mean((s - r)**2)
-    # print(f'loss is: {loss}')
+    if sample_number % 10 == 0:
+        # get ids for 6 closet reference images
+        needed_min_id = sorted(dist_distances.items(), key=lambda x: x[1])
 
-    needed_min_id = sorted(dist.items(), key=lambda x: x[1])
+        plt.subplot(121)
+        plt.plot(dist_distances.values(), 'o')
+        for idx, value in dist_distances.items():
+            plt.annotate(idx, (idx, value))
 
-    plt.subplot(121)  # row col idx
+        # show six closet reference images(bottom) and original sample (top)
+        for i, j in enumerate([4, 5, 6, 16, 17, 18]):
+            plt.subplot(4, 6, j)
+            plt.imshow(sample_decoded.detach().numpy()[0].T, cmap=plt.get_cmap('Greys'))
+            plt.subplot(4, 6, j + 6)
+            plt.imshow(reference_decoded[needed_min_id[i][0]].detach().numpy().T, cmap=plt.get_cmap('Greys'))
+            plt.ylabel(f'idx_{needed_min_id[i][0]}')
 
-    plt.plot(dist.values(), 'o')
-    for idx, value in dist.items():
-        plt.annotate(idx, (idx, value))
-
-    for i, j in enumerate([4, 5, 6, 16, 17, 18]):
-        plt.subplot(4, 6, j)
-        plt.imshow(s.detach().numpy()[0].T, cmap=plt.get_cmap('Greys'))
-
-        plt.subplot(4, 6, j + 6)
-        plt.imshow(reference[needed_min_id[i][0]].detach().numpy().T, cmap=plt.get_cmap('Greys'))
-    plt.show()
-    # TODO process sample embedding
-    # TODO calculate cosine distance
-    # TODO select correct class
-    # TODO plot results (images of reference samples and closest ones in
+        plt.savefig(f'plots/plot_{sample_number}.png')
+        plt.show()
 
