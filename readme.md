@@ -1,0 +1,1 @@
+# tensorboard --logdir=25_task_07_02_22/dense_weighted/seq_name/seq_name - Laucnh tensorboard
