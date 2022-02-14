@@ -5,7 +5,6 @@ import math
 import os
 import pathlib
 import random
-import time
 
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
@@ -23,22 +22,17 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = 36
 
-class DatasetBalls(torch.utils.data.Dataset):
-    def __init__(self):
-        self.data = np.load('25_task_07_02_22/Variational_AE/VAE_homeworks/balls_dataset.npy')
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        pil_y = self.data[idx]
-        pil_y = pil_y.astype(np.float) / 255.0 # 0..1
-        np_y = np.array(pil_y)
-        return torch.FloatTensor(np_y)
-
-dataset = DatasetBalls()
+dataset = torchvision.datasets.EMNIST(
+    root='/data',
+    split='bymerge',
+    train=True,
+    download=True,
+    transform=transforms.Compose([
+        transforms.ToTensor()
+    ])
+)
 data_loader = torch.utils.data.DataLoader(
     dataset=dataset,
     batch_size=BATCH_SIZE,
@@ -50,28 +44,26 @@ data_loader = torch.utils.data.DataLoader(
 
 
 idx = 0
-for x in data_loader:
+for x, y_idx in data_loader:
     plt.rcParams["figure.figsize"] = (int(BATCH_SIZE/4), int(BATCH_SIZE/4))
     plt_rows = int(np.ceil(np.sqrt(BATCH_SIZE)))
     for i in range(BATCH_SIZE):
         plt.subplot(plt_rows, plt_rows, i + 1)
-        plt.imshow(x[i])
+        plt.imshow(x[i][0].T, cmap=plt.get_cmap('Greys'))
         plt.title(f"idx: {idx}")
         idx += 1
         plt.tight_layout(pad=0.5)
     plt.show()
-
     break
-    time.sleep(1)
-    #if input('inspect more samples? (y/n)') == 'n':
-    #    break
+    # if input('inspect more samples? (y/n)') == 'n':
+    #     break
 
 
 class VAE2(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=3, out_channels=4, padding=1, stride=1, kernel_size=3, bias=False),
+            torch.nn.Conv2d(in_channels=1, out_channels=4, padding=1, stride=1, kernel_size=3, bias=False),
             torch.nn.ReLU(),
             torch.nn.GroupNorm(num_channels=4, num_groups=2),
             torch.nn.AvgPool2d(kernel_size=4, stride=2, padding=0),
@@ -112,9 +104,9 @@ class VAE2(torch.nn.Module):
             torch.nn.GroupNorm(num_channels=4, num_groups=2),
 
             torch.nn.AdaptiveAvgPool2d(output_size=(28, 28)),
-            torch.nn.Conv2d(in_channels=4, out_channels=3, padding=1, stride=1, kernel_size=3, bias=False),
+            torch.nn.Conv2d(in_channels=4, out_channels=1, padding=1, stride=1, kernel_size=3, bias=False),
             torch.nn.ReLU(),
-            torch.nn.LayerNorm(normalized_shape=[3, 28, 28]),
+            torch.nn.LayerNorm(normalized_shape=[1, 28, 28]),
             torch.nn.Sigmoid()
         )
 
@@ -134,7 +126,7 @@ class VAE2(torch.nn.Module):
         return y_prim, z, z_sigma, z_mu
 
     def encode_z(self, x):
-        out = self.encoder(x)
+        out = self.encoder.forward(x)
 
         out_flat = out.view(x.size(0), -1)
 
@@ -153,30 +145,30 @@ class VAE2(torch.nn.Module):
 
 
 model = VAE2()
-model.load_state_dict(torch.load('./pretrained_models/balls_mse_low-12-run.pt', map_location='cpu'))
+model.load_state_dict(torch.load('mnist_mnist_bce_low_beta_fixed_log_epsilon-17-run-25.pt', map_location='cpu'))
 model.eval()
 torch.set_grad_enabled(False)
 
 
 IDEXES_TO_ENCODE = [
-  42, 43, 44, 51, 52, 54, 10, 5, 25
+    102, 80, 43, 23, 11, 86 # all these are same type of letter
 ]
 
 x_to_encode = []
 for idx in IDEXES_TO_ENCODE:
-    x_to_encode.append(dataset[idx])
+    x_to_encode.append(dataset[idx][0])
 
 plt_rows = int(np.ceil(np.sqrt(len(x_to_encode))))
 for i in range(len(x_to_encode)):
     plt.subplot(plt_rows, plt_rows, i + 1)
     x = x_to_encode[i]
-    plt.imshow(x)
+    plt.imshow(x[0].T, cmap=plt.get_cmap('Greys'))
     plt.title(f"idx: {IDEXES_TO_ENCODE[i]}")
     plt.tight_layout(pad=0.5)
 plt.show()
 
 x_tensor = torch.stack(x_to_encode)
-zs = model.encode_z(x_tensor.permute(0, 3, 2, 1))
+zs = model.encode_z(x_tensor)
 
 z_mu = torch.mean(zs, dim=0)
 z_sigma = torch.std(zs, dim=0)
@@ -191,13 +183,12 @@ for i in range(BATCH_SIZE):
         z = dist.sample()
     z_generated.append(z)
 z = torch.stack(z_generated)
-
-x_generated = model.decode_z(z).permute(0, 2, 3, 1)
+x_generated = model.decode_z(z)
 
 plt_rows = int(np.ceil(np.sqrt(BATCH_SIZE)))
 for i in range(BATCH_SIZE):
     plt.subplot(plt_rows, plt_rows, i + 1)
-    plt.imshow(x_generated[i])
+    plt.imshow(x_generated[i][0].T, cmap=plt.get_cmap('Greys'))
     if i == 0:
         plt.title(f"mean")
     else:

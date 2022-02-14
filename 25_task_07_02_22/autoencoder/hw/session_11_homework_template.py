@@ -53,8 +53,8 @@ class Autoencoder(torch.nn.Module):
         )
 
     def forward(self, x):
-        out = self.encoder(x)
-        out = self.decoder(out)
+        out = self.encoder.forward(x)
+        out = self.decoder.forward(out)
         return out
 # make model instance
 model = Autoencoder()
@@ -103,6 +103,7 @@ with torch.no_grad():
     refence_embedding_flat = refence_embedding.view(refence_embedding.size(0), -1)
     reference_decoded = model.decoder(refence_embedding_flat.view(-1,32,1,1))
 
+# torch.set_grad_enabled(False)
 
 # a lot of first samples will be duplicates from reference images
 for sample_number, sample in enumerate(x):
