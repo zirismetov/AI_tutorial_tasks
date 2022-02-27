@@ -1,16 +1,19 @@
 import json
 import math
 import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from torch.nn.utils.rnn import pad_packed_sequence, PackedSequence, pack_padded_sequence
-from torch.hub import download_url_to_file
-import torch.utils.data
 
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.utils.data
 # pip install nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
-import nltk
+from torch.hub import download_url_to_file
+from torch.nn.utils.rnn import pad_packed_sequence, PackedSequence, pack_padded_sequence
+import nlpaug
+import nlpaug.augmenter.char as nac
+import nlpaug.augmenter.word as naw
+import nlpaug.augmenter.sentence as nas
 
 # nltk.download('punkt')
 
@@ -32,7 +35,7 @@ MIN_SENTENCE_LEN = 3
 MAX_SENTENCE_LEN = 20
 MAX_LEN = 200  # limit max number of samples otherwise too slow training (on GPU use all samples / for final training)
 if DEVICE == 'cuda':
-    MAX_LEN = None
+    MAX_LEN = 10000
 
 PATH_DATA = '../data'
 os.makedirs('./results', exist_ok=True)
@@ -40,12 +43,12 @@ os.makedirs(PATH_DATA, exist_ok=True)
 
 class DatasetCustom(torch.utils.data.Dataset):
     def __init__(self):
-        if not os.path.exists(f'{PATH_DATA}/quotes.json'):
-            download_url_to_file(
-                'https://www.yellowrobot.xyz/share/recipes_raw_nosource_epi.json',
-                f'{PATH_DATA}/recipes_raw_nosource_epi.json',
-                progress=True
-            )
+        # if not os.path.exists(f'{PATH_DATA}/quotes.json'):
+        #     download_url_to_file(
+        #         'https://www.yellowrobot.xyz/share/recipes_raw_nosource_epi.json',
+        #         f'{PATH_DATA}/recipes_raw_nosource_epi.json',
+        #         progress=True
+        #     )
         with open(f'{PATH_DATA}/quotes.json', encoding="utf8") as fp:
             data_json = json.load(fp)
 
@@ -54,7 +57,7 @@ class DatasetCustom(torch.utils.data.Dataset):
         self.words_to_idxes = {}
         self.words_counts = {}
         self.idxes_to_words = {}
-
+        self.aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased', action="substitute")
         for each_quote in data_json:
             str_quote = each_quote['Quote']
             word_list = []
@@ -69,7 +72,10 @@ class DatasetCustom(torch.utils.data.Dataset):
                 if not word == word_sep[-1]:
                     word_list.append(" ")
             str_quote = ''.join(word_list)
-            sentences = sent_tokenize(str_quote)
+            aug_quote =self.aug.augment(str_quote)
+            sentence_orig = sent_tokenize(str_quote)
+            sentence_aug = sent_tokenize((aug_quote))
+            sentences = sentence_orig + sentence_aug
             for sentence in sentences:
                 words = word_tokenize(sentence.lower())
                 if len(words) > MAX_SENTENCE_LEN:
@@ -90,7 +96,6 @@ class DatasetCustom(torch.utils.data.Dataset):
                 break
 
         self.max_length = np.max(self.lengths) + 1
-
         self.end_token = '[END]'
         self.words_to_idxes[self.end_token] = len(self.words_to_idxes)
         self.idxes_to_words[self.words_to_idxes[self.end_token]] = self.end_token
@@ -109,9 +114,7 @@ class DatasetCustom(torch.utils.data.Dataset):
         samples = np.random.choice(self.sentences, 5)
         for each in samples:
             print(' '.join([self.idxes_to_words[it] for it in each]))
-        # TODO placeholder to replace rare words
-        # TODO remove punctuation
-        # TODO histogtam of words_counts
+
 
     def __len__(self):
         return len(self.sentences)
@@ -154,21 +157,21 @@ class GRUCell(torch.nn.Module):
 
         self.W_y = torch.nn.Parameter(
             torch.FloatTensor(input_size, hidden_size).uniform_(-stdv, stdv)
-        )
+        ).to(DEVICE)
         self.bias_y = torch.nn.Parameter(
             torch.FloatTensor(hidden_size).zero_()
-        )
+        ).to(DEVICE)
         def three():
             return (torch.nn.Parameter(
-                        torch.FloatTensor(input_size, hidden_size).uniform_(-stdv, stdv)),
+                        torch.FloatTensor(input_size, hidden_size).uniform_(-stdv, stdv)).to(DEVICE),
 
                     torch.nn.Parameter(
-                        torch.FloatTensor(input_size, hidden_size).uniform_(-stdv, stdv)),
+                        torch.FloatTensor(input_size, hidden_size).uniform_(-stdv, stdv)).to(DEVICE),
 
-                    torch.FloatTensor(hidden_size).zero_())
+                    torch.FloatTensor(hidden_size).zero_().to(DEVICE))
 
-        self.W_xz, self.W_hz, self.b_z = three()  # Update gate parameters
-        self.W_xr, self.W_hr, self.b_r = three()  # Reset gate parameters
+        self.W_xz, self.W_hz, self.b_z = three() # Update gate parameters
+        self.W_xr, self.W_hr, self.b_r = three() # Reset gate parameters
         self.W_xh, self.W_hh, self.b_h = three()
 
     def forward(self, x: PackedSequence, hidden=None):
@@ -180,10 +183,10 @@ class GRUCell(torch.nn.Module):
 
         x_seq = x_unpack.permute(1, 0, 2)
         for x_t in x_seq:
-            if model.training:
-                x_t = torch.nn.functional.dropout(x_t, p=0.5)
-            update_gate = torch.sigmoid((x_t @ self.W_xz) + (hidden @ self.W_hz) + self.b_z)
-            reset_gate = torch.sigmoid((x_t @ self.W_xr) + (hidden @ self.W_hr) + self.b_r)
+            # if model.training:
+            #     x_t = torch.nn.functional.dropout(x_t, p=0.5)
+            update_gate = torch.sigmoid((x_t @ self.W_xz) + (hidden @ self.W_hz) + self.b_z).to(DEVICE)
+            reset_gate = torch.sigmoid((x_t @ self.W_xr) + (hidden @ self.W_hr) + self.b_r).to(DEVICE)
             h_hat = torch.tanh((x_t @ self.W_xh) + ((reset_gate * hidden) @ self.W_hh) + self.b_h)
             hidden = update_gate * hidden + (1 - update_gate) * h_hat
             Y = hidden @ self.W_y + self.bias_y
@@ -199,11 +202,10 @@ class GRUCell(torch.nn.Module):
 class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.W_e = torch.nn.Embedding(
+        self.embedding = torch.nn.Embedding(
             num_embeddings=dataset_full.max_classes_tokens,
             embedding_dim=RNN_HIDDEN_SIZE
         )
-        self.LSTM = torch.nn.LSTM()
         layers = []
         for _ in range(RNN_LAYERS):
             layers.append(GRUCell(
@@ -326,4 +328,4 @@ while epoch < 202:
 
     plt.legend(plts, [it.get_label() for it in plts])
     plt.savefig(f'./results/epoch-{epoch}.png')
-    plt.show()
+    # plt.show()

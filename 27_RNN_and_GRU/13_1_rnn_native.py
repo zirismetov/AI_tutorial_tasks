@@ -117,9 +117,7 @@ class DatasetCustom(torch.utils.data.Dataset):
         samples = np.random.choice(self.sentences, 5)
         for each in samples:
             print(' '.join([self.idxes_to_words[it] for it in each]))
-        # TODO placeholder to replace rare words
-        # TODO remove punctuation
-        # TODO histogtam of words_counts
+
 
     def __len__(self):
         return len(self.sentences)
@@ -192,8 +190,8 @@ class RNNCell(torch.nn.Module):
         #     )
         #     h_out.append(hidden)
         for x_t in x_seq:
-            if model.training:
-                x_t = torch.nn.functional.dropout(x_t, p=0.5)
+            # if model.training:
+            #     x_t = torch.nn.functional.dropout(x_t, p=0.5)
             hidden = torch.tanh(
                 hidden @ self.W_h +
                 x_t @ self.W_x +
