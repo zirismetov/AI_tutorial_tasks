@@ -28,14 +28,14 @@ RNN_DROPOUT = 0.3
 run_path = ''
 
 DEVICE = 'cpu'
-if torch.cuda.is_available():
-    DEVICE = 'cuda'
+# if torch.cuda.is_available():
+#     DEVICE = 'cuda'
 
 MIN_SENTENCE_LEN = 3
-MAX_SENTENCE_LEN = 20
+MAX_SENTENCE_LEN = 45
 MAX_LEN = 200  # limit max number of samples otherwise too slow training (on GPU use all samples / for final training)
-if DEVICE == 'cuda':
-    MAX_LEN = 10000
+# if DEVICE == 'cuda':
+#     MAX_LEN = 5000
 
 PATH_DATA = '../data'
 os.makedirs('./results', exist_ok=True)
@@ -57,7 +57,7 @@ class DatasetCustom(torch.utils.data.Dataset):
         self.words_to_idxes = {}
         self.words_counts = {}
         self.idxes_to_words = {}
-        self.aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased', action="substitute")
+        # self.aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased', action="substitute")
         for each_quote in data_json:
             str_quote = each_quote['Quote']
             word_list = []
@@ -72,10 +72,10 @@ class DatasetCustom(torch.utils.data.Dataset):
                 if not word == word_sep[-1]:
                     word_list.append(" ")
             str_quote = ''.join(word_list)
-            aug_quote =self.aug.augment(str_quote)
+            # aug_quote =self.aug.augment(str_quote)
             sentence_orig = sent_tokenize(str_quote)
-            sentence_aug = sent_tokenize((aug_quote))
-            sentences = sentence_orig + sentence_aug
+            # sentence_aug = sent_tokenize(aug_quote)
+            sentences = sentence_orig
             for sentence in sentences:
                 words = word_tokenize(sentence.lower())
                 if len(words) > MAX_SENTENCE_LEN:
@@ -139,10 +139,10 @@ torch.seed()
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=True
+    shuffle=False
 )
 data_loader_test = torch.utils.data.DataLoader(
-    dataset=dataset_train,
+    dataset=dataset_test,
     batch_size=BATCH_SIZE,
     shuffle=False
 )
@@ -174,6 +174,11 @@ class GRUCell(torch.nn.Module):
         self.W_xr, self.W_hr, self.b_r = three() # Reset gate parameters
         self.W_xh, self.W_hh, self.b_h = three()
 
+        params = [self.W_xz, self.W_hz, self.b_z, self.W_xr, self.W_hr, self.b_r, self.W_xh, self.W_hh, self.b_h, self.W_y, self.bias_y]
+        for param in params:
+            param.requires_grad_(True)
+
+
     def forward(self, x: PackedSequence, hidden=None):
         h_out = []
         x_unpack, lengths = pad_packed_sequence(x, batch_first=True)
@@ -183,12 +188,21 @@ class GRUCell(torch.nn.Module):
 
         x_seq = x_unpack.permute(1, 0, 2)
         for x_t in x_seq:
-            # if model.training:
-            #     x_t = torch.nn.functional.dropout(x_t, p=0.5)
+            # x_t = torch.nn.functional.dropout(x_t, p=0.5)
             update_gate = torch.sigmoid((x_t @ self.W_xz) + (hidden @ self.W_hz) + self.b_z).to(DEVICE)
             reset_gate = torch.sigmoid((x_t @ self.W_xr) + (hidden @ self.W_hr) + self.b_r).to(DEVICE)
-            h_hat = torch.tanh((x_t @ self.W_xh) + ((reset_gate * hidden) @ self.W_hh) + self.b_h)
-            hidden = update_gate * hidden + (1 - update_gate) * h_hat
+            h_tilda = torch.tanh((x_t @ self.W_xh) + (reset_gate * (hidden @ self.W_hh)) + self.b_h)
+            hidden = update_gate * hidden + (1 - update_gate) * h_tilda
+            Y = hidden @ self.W_y + self.bias_y
+            h_out.append(Y)
+
+            update_gate = torch.sigmoid((x_t.unsqueeze(dim=-1).permute(0,2, 1) @ self.W_xz.t()).squeeze(dim=1) +
+                                        (hidden @ self.W_hz) + self.b_z).to(DEVICE)
+            reset_gate = torch.sigmoid((x_t.unsqueeze(dim=-1).permute(0,2, 1) @ self.W_xr.t()).squeeze(dim=1) +
+                                       (hidden @ self.W_hr) + self.b_r).to(DEVICE)
+            h_tilda = torch.tanh((x_t.unsqueeze(dim=-1).permute(0,2, 1) @ self.W_xh.t()).squeeze(dim=1) +
+                                 (reset_gate * (hidden @ self.W_hh)) + self.b_h)
+            hidden = update_gate * hidden + (1 - update_gate) * h_tilda
             Y = hidden @ self.W_y + self.bias_y
             h_out.append(Y)
 
@@ -213,6 +227,10 @@ class Model(torch.nn.Module):
                 hidden_size=RNN_HIDDEN_SIZE
             ))
         self.rnn = torch.nn.Sequential(*layers)
+        self.gru = torch.nn.GRU(input_size=RNN_HIDDEN_SIZE,
+                                hidden_size=RNN_HIDDEN_SIZE,
+                                batch_first=True,
+                                num_layers=2)
 
     def forward(self, x: PackedSequence, hidden=None):
 
@@ -222,8 +240,10 @@ class Model(torch.nn.Module):
             batch_sizes=x.batch_sizes,
             sorted_indices=x.sorted_indices
         )
-        hidden = self.rnn.forward(embs_seq)
-        y_prim_logits = hidden.data @ self.embedding.weight.t()
+        y_gru = self.rnn.forward(embs_seq)
+        # y_gru, ten = self.gru.forward(embs_seq)
+
+        y_prim_logits = y_gru.data @ self.embedding.weight.t()
         y_prim = torch.softmax(y_prim_logits, dim=1)
         y_prim_packed = PackedSequence(
             data=y_prim,
@@ -247,14 +267,15 @@ for stage in ['train', 'test']:
         metrics[f'{stage}_{metric}'] = []
 epoch = 0
 while epoch < 202:
-    # for epoch in range(1, EPOCHS + 1):
     epoch += 1
     for data_loader in [data_loader_train, data_loader_test]:
         metrics_epoch = {key: [] for key in metrics.keys()}
 
         stage = 'train'
+        model.train()
         if data_loader == data_loader_test:
             stage = 'test'
+            model.eval()
 
         for x, y, lengths in data_loader:
 
@@ -277,7 +298,7 @@ while epoch < 202:
 
             metrics_epoch[f'{stage}_loss'].append(loss.item())  # Tensor(0.1) => 0.1f
 
-            if data_loader == data_loader_train:
+            if model.training:
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -328,4 +349,4 @@ while epoch < 202:
 
     plt.legend(plts, [it.get_label() for it in plts])
     plt.savefig(f'./results/epoch-{epoch}.png')
-    # plt.show()
+    plt.show()

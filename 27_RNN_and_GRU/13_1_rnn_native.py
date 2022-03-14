@@ -145,7 +145,7 @@ data_loader_train = torch.utils.data.DataLoader(
     shuffle=True
 )
 data_loader_test = torch.utils.data.DataLoader(
-    dataset=dataset_train,
+    dataset=dataset_test,
     batch_size=BATCH_SIZE,
     shuffle=False
 )
@@ -182,13 +182,7 @@ class RNNCell(torch.nn.Module):
             hidden = torch.FloatTensor(batch_size, self.hidden_size).zero_().to(DEVICE)
 
         x_seq = x_unpack.permute(1, 0, 2)
-        # for x_t in x_seq:
-        #     hidden = torch.tanh(
-        #         hidden @ self.W_h +
-        #         x_t @ self.W_x +
-        #         self.bias_h
-        #     )
-        #     h_out.append(hidden)
+
         for x_t in x_seq:
             # if model.training:
             #     x_t = torch.nn.functional.dropout(x_t, p=0.5)
