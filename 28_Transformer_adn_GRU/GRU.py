@@ -189,12 +189,12 @@ class GRUCell(torch.nn.Module):
         x_seq = x_unpack.permute(1, 0, 2)
         for x_t in x_seq:
             # x_t = torch.nn.functional.dropout(x_t, p=0.5)
-            update_gate = torch.sigmoid((x_t @ self.W_xz) + (hidden @ self.W_hz) + self.b_z).to(DEVICE)
-            reset_gate = torch.sigmoid((x_t @ self.W_xr) + (hidden @ self.W_hr) + self.b_r).to(DEVICE)
-            h_tilda = torch.tanh((x_t @ self.W_xh) + (reset_gate * (hidden @ self.W_hh)) + self.b_h)
-            hidden = update_gate * hidden + (1 - update_gate) * h_tilda
-            Y = hidden @ self.W_y + self.bias_y
-            h_out.append(Y)
+            # update_gate = torch.sigmoid((x_t @ self.W_xz) + (hidden @ self.W_hz) + self.b_z).to(DEVICE)
+            # reset_gate = torch.sigmoid((x_t @ self.W_xr) + (hidden @ self.W_hr) + self.b_r).to(DEVICE)
+            # h_tilda = torch.tanh((x_t @ self.W_xh) + (reset_gate * (hidden @ self.W_hh)) + self.b_h)
+            # hidden = update_gate * hidden + (1 - update_gate) * h_tilda
+            # Y = hidden @ self.W_y + self.bias_y
+            # h_out.append(Y)
 
             update_gate = torch.sigmoid((x_t.unsqueeze(dim=-1).permute(0,2, 1) @ self.W_xz.t()).squeeze(dim=1) +
                                         (hidden @ self.W_hz) + self.b_z).to(DEVICE)
