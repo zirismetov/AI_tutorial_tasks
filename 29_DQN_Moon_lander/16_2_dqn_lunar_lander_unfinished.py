@@ -19,7 +19,7 @@ parser.add_argument('-is_render', default=True, type=lambda x: (str(x).lower() =
 parser.add_argument('-learning_rate', default=1e-3, type=float)
 parser.add_argument('-batch_size', default=128, type=int)
 parser.add_argument('-episodes', default=10000, type=int)
-parser.add_argument('-replay_buffer_size', default=500, type=int)
+parser.add_argument('-replay_buffer_size', default=5000, type=int)
 
 parser.add_argument('-hidden_size', default=128, type=int)
 
@@ -51,18 +51,39 @@ class Model(nn.Module):
 
 
 class ReplayMemory:
-    def __init__(self, size, batch_size):
+    def __init__(self, size, batch_size, prob_alpha=1):
         self.size = size
         self.batch_size = batch_size
+        self.prob_alpha = prob_alpha
         self.memory = []
+        self.priorities = np.zeros((size,), dtype=np.float32)
+        self.pos = 0
 
     def push(self, transition):
+        new_priority = np.median(self.priorities) if self.memory else 1.0
+
         self.memory.append(transition)
         if len(self.memory) > self.size:
             del self.memory[0]
+        pos = len(self.memory) - 1
+        self.priorities[pos] = new_priority
 
     def sample(self):
-        return random.sample(self.memory, self.batch_size)
+        probs = np.array(self.priorities)
+        if len(self.memory) < len(probs):
+            probs = probs[:len(self.memory)]
+
+        probs += 1e-8
+        probs = probs ** self.prob_alpha
+        probs /= probs.sum()
+
+        indices = np.random.choice(len(self.memory), self.batch_size, p=probs)
+        samples = [self.memory[idx] for idx in indices]
+        return samples, indices
+
+    def update_priorities(self, batch_indices, batch_priorities):
+        for idx, priority in zip(batch_indices, batch_priorities):
+            self.priorities[idx] = priority.item()
 
     def __len__(self):
         return len(self.memory)
@@ -106,7 +127,7 @@ class DQNAgent:
             self.epsilon *= self.epsilon_decay
 
         self.optimizer.zero_grad()
-        batch = self.replay_memory.sample()
+        batch, replay_idx = self.replay_memory.sample()
         s_t0, a_t0, r_t1, s_t1, is_end = zip(*batch)
 
         s_t0 = torch.FloatTensor(s_t0).to(args.device)
@@ -125,7 +146,9 @@ class DQNAgent:
 
         q_t1_final = r_t1 + is_not_end * (args.gamma * q_t1)
 
-        loss = torch.mean((q_t0 - q_t1_final)**2)
+        td_error = (q_t0 - q_t1_final)**2
+        self.replay_memory.update_priorities(replay_idx, td_error)
+        loss = torch.mean(td_error)
         loss.backward()
         self.optimizer.step()
 

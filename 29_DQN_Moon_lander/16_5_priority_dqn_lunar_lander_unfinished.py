@@ -1,3 +1,4 @@
+import  numpy as np
 class ReplayPriorityMemory:
     def __init__(self, size, batch_size, prob_alpha=1):
         self.size = size
