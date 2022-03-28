@@ -4,13 +4,43 @@ import numpy as np
 import torch
 import torch.nn as nn
 import random
-
+import glob
+import io
+import base64
+# FOR COLAB
+# from gym.wrappers import Monitor
+# from IPython.display import HTML
+# from pyvirtualdisplay import Display
+# from IPython import display as ipythondisplay
+import time
 import matplotlib
-
-matplotlib.use('TkAgg')
+import pdb
+# matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 
 # !pip3 install box2d-py
+
+# display = Display(visible=0, size=(1400, 900))
+# display.start()
+
+"""
+Utility functions to enable video recording of gym environment 
+and displaying it.
+To enable video, just do "env = wrap_env(env)""
+"""
+
+# def show_video():
+#     mp4list = glob.glob('video/*.mp4')
+#     if len(mp4list) > 0:
+#         mp4 = mp4list[0]
+#         video = io.open(mp4, 'r+b').read()
+#         encoded = base64.b64encode(video)
+#         ipythondisplay.display(HTML(data='''<video alt="test" autoplay
+#                 loop controls style="height: 400px;">
+#                 <source src="data:video/mp4;base64,{0}" type="video/mp4" />
+#              </video>'''.format(encoded.decode('ascii'))))
+#     else:
+#         print("Could not find video")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-device', default='cuda', type=str)
@@ -18,17 +48,18 @@ parser.add_argument('-is_render', default=True, type=lambda x: (str(x).lower() =
 
 parser.add_argument('-learning_rate', default=1e-3, type=float)
 parser.add_argument('-batch_size', default=128, type=int)
-parser.add_argument('-episodes', default=10000, type=int)
+parser.add_argument('-episodes', default=500, type=int)
 parser.add_argument('-replay_buffer_size', default=5000, type=int)
+parser.add_argument('-target_update', default=3000, type=int)
 
-parser.add_argument('-hidden_size', default=128, type=int)
+parser.add_argument('-hidden_size', default=32, type=int)
 
-parser.add_argument('-gamma', default=0.9, type=float)
+parser.add_argument('-gamma', default=0.7, type=float)
 parser.add_argument('-epsilon', default=0.99, type=float)
 parser.add_argument('-epsilon_min', default=0.1, type=float)
 parser.add_argument('-epsilon_decay', default=0.999, type=float)
 
-parser.add_argument('-max_steps', default=500, type=int)
+parser.add_argument('-max_steps', default=400, type=int)
 
 args, other_args = parser.parse_known_args()
 
@@ -43,6 +74,8 @@ class Model(nn.Module):
             torch.nn.Linear(in_features=state_size, out_features=hidden_size),
             torch.nn.LayerNorm(normalized_shape=hidden_size),
             torch.nn.LeakyReLU(),
+            torch.nn.Linear(in_features=hidden_size, out_features=hidden_size),
+            torch.nn.LeakyReLU(),
             torch.nn.Linear(in_features=hidden_size, out_features=action_size),
         )
 
@@ -50,7 +83,7 @@ class Model(nn.Module):
         return self.layers.forward(s_t0)
 
 
-class ReplayMemory:
+class ReplayPriorityMemory:
     def __init__(self, size, batch_size, prob_alpha=1):
         self.size = size
         self.batch_size = batch_size
@@ -103,12 +136,17 @@ class DQNAgent:
         self.learning_rate = args.learning_rate
         self.device = args.device
         self.q_model = Model(self.state_size, self.action_size, args.hidden_size).to(self.device)
+        self.q_t_model = Model(self.state_size, self.action_size, args.hidden_size).to(self.device)
+        self.update_q_t_model()
         self.optimizer = torch.optim.Adam(
             self.q_model.parameters(),
             lr=self.learning_rate,
         )
 
-        self.replay_memory = ReplayMemory(args.replay_buffer_size, args.batch_size)
+        self.replay_memory = ReplayPriorityMemory(args.replay_buffer_size, args.batch_size)
+
+    def update_q_t_model(self):
+        self.q_t_model.load_state_dict(self.q_model.state_dict())
 
     def act(self, s_t0):
         if np.random.rand() <= self.epsilon:
@@ -140,7 +178,8 @@ class DQNAgent:
 
         q_t0_all = self.q_model.forward(s_t0)
         q_t0 = q_t0_all[idxes, a_t0]
-        q_t1_all = self.q_model.forward(s_t1)
+
+        q_t1_all = self.q_t_model.forward(s_t1).detach()
         a_t1 = q_t1_all.argmax(dim=1)
         q_t1 = q_t1_all[idxes, a_t1]
 
@@ -167,23 +206,30 @@ agent = DQNAgent(
     env.action_space.n
 )
 is_end = False
+t_total = 0
 
-for e in range(args.episodes):
+# env = Monitor(env, f'./video', video_callable=lambda episode_id: True, force=True)
+
+for e in range(args.episodes+1):
     s_t0 = env.reset()
     reward_total = 0
     episode_loss = []
     for t in range(args.max_steps):
-        if args.is_render and len(all_scores):
-            if e % 10 == 0 and all_scores[-1] > 0:
-                env.render()
+        t_total +=1
+        if t_total % args.target_update == 0:
+            agent.update_q_t_model()
+        if all_scores and all([it > 0 for it in all_scores[-2:]]):
+            print(f"THIS ONE: {e}")
+        env.render()
+
         a_t0 = agent.act(s_t0)
         s_t1, r_t1, is_end, _ = env.step(a_t0)
 
-        reward_total += r_t1
 
         if t == args.max_steps-1:
             r_t1 = -100
             is_end = True
+        reward_total += r_t1
 
         agent.replay_memory.push(
             (s_t0, a_t0, r_t1, s_t1, is_end)
@@ -222,8 +268,9 @@ for e in range(args.episodes):
     plt.plot(all_t)
 
     plt.xlabel('Episode')
-    plt.pause(1e-3)  # pause a bit so that plots are updated
+    plt.pause(1e-2)  # pause a bit so that plots are updated
 
+# show_video()
 env.close()
 plt.ioff()
 plt.show()
