@@ -92,9 +92,6 @@ class Model(nn.Module):
             torch.nn.LeakyReLU(),
 
         )
-
-
-
     def forward(self, s_t0):
         features = self.layers.forward(s_t0)
         values = self.values.forward(features)
