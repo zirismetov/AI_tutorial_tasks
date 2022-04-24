@@ -71,6 +71,7 @@ data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=args.batch_size,
     num_workers=8 if cuda_available else 0,
+    # num_workers= 0,
     shuffle=True
 )
 
@@ -86,7 +87,7 @@ class Model(torch.nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.resnet_trained: ResNet = torchvision.models.resnet18(pretrained=True)
+        self.resnet_trained: ResNet = torchvision.models.resnet18(pretrained=True).to(args.device)
         conv_1_pretrained = self.resnet_trained.conv1  # (out_planes, 3 ,7, 7)
         self.resnet_trained.conv1 = torch.nn.Conv2d(in_channels=1,
                                                     out_channels=conv_1_pretrained.out_channels,
@@ -168,7 +169,7 @@ for epoch in range(1, args.epochs + 1):
         for x, y in tqdm(dataloader, desc=mode):
             x = x.to(args.device)
             y = y.to(args.device).squeeze()
-            y = y.type(torch.LongTensor)
+            y = y.type(torch.LongTensor).to(args.device)
 
             y_prim = model.forward(x)
             loss = loss_fn.forward(y_prim, y)
