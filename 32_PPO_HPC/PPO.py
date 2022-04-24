@@ -1,13 +1,33 @@
 import os
-import shutil
-import time
-
 import gym #  pip install git+https://github.com/openai/gym
 import argparse
 import numpy as np
 import torch
 import torch.nn as nn
 import random
+import torch.distributions
+# !pip3 install box2d-py
+import glob
+import io
+import base64
+# from gym.wrappers import Monitor
+# from IPython.display import HTML
+# from IPython import display as ipythondisplay
+from pyvirtualdisplay import Display
+import time
+import matplotlib as mpl
+import pdb
+# matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from torch.distributions import Categorical
+# !pip3 install box2d-py
+
+mpl.rc('axes', labelsize=14)
+mpl.rc('xtick', labelsize=12)
+mpl.rc('ytick', labelsize=12)
+mpl.rc('animation', html='jshtml')
+display = Display(visible=0, size=(1400, 900)).start()
 
 # conda install box2d-py
 # export HEADLESS=1
@@ -147,6 +167,7 @@ class A2CAgent:
 
         self.model_a = ModelActor(self.state_size, self.action_size, args.hidden_size).to(self.device)
         self.model_t = ModelActor(self.state_size, self.action_size, args.hidden_size).to(self.device)
+        self.policy_clip = 0.2
 
         self.model_c = ModelCritic(self.state_size, self.action_size, args.hidden_size).to(self.device)
 
@@ -189,15 +210,16 @@ class A2CAgent:
         self.optimizer_c.zero_grad()
 
         s_t0, a_t0, delta = zip(*batch)
-
         s_t0 = torch.FloatTensor(s_t0).to(args.device)
         a_t0 = torch.LongTensor(a_t0).to(args.device)
+
         delta = torch.FloatTensor(delta).to(args.device)
 
         v_t = self.model_c.forward(s_t0).squeeze()
 
-        loss_c = 0 #TODO
-
+        A = delta - v_t.detach()
+        A = (A - A.mean()) / (A.std() + 1e-8)
+        loss_c = (delta - v_t)**2
         loss_c_mean = torch.mean(loss_c)
         loss_c_mean.backward()
         self.optimizer_c.step()
@@ -206,15 +228,23 @@ class A2CAgent:
 
         a_all = self.model_a.forward(s_t0)
         a_t = a_all[range(len(a_t0)), a_t0]
+        #         a_t = a_t.argmax(dim=1)
+        #         set_trace()
+        #         dist = Categorical(a_all)
+        #         a_theta = dist.log_prob(a_t)
 
         a_all_old = self.model_t.forward(s_t0).detach()
         a_t_old = a_all_old[range(len(a_t0)), a_t0]
-
+        #         a_t_old = a_t_old.argmax(dim=1)
+        #         dist = Categorical(a_all_old)
         if e < args.target_update + 1:
             a_t_old = a_t.clone().detach()
+        #         a_old_theta = dist.log_prob(a_t_old)
 
-        loss_a = 0 #TODO
-
+        ratios = torch.exp(a_t - a_t_old)
+        clamp = torch.clamp(ratios, 1 - self.policy_clip, 1 + self.policy_clip) * A
+        final = torch.min(ratios, clamp)
+        loss_a = -(A * final)
         loss_a_mean = torch.mean(loss_a)
         loss_a_mean.backward()
         self.optimizer_a.step()
@@ -239,101 +269,3 @@ agent = A2CAgent(
 )
 is_end = False
 PLOT_REFRESH_RATE = 10
-
-
-for e in range(args.episodes):
-    s_t0 = env.reset()
-    reward_total = 0
-
-    transitions = []
-    states_t1 = []
-    end_t1 = []
-    for t in range(args.max_steps):
-        if args.is_render and len(all_scores):
-            if e % PLOT_REFRESH_RATE == 0 and all_scores[-1] > 100:
-                env.render()
-                time.sleep(0.01)
-        a_t0 = agent.act(s_t0)
-        s_t1, r_t1, is_end, _ = env.step(a_t0)
-        end_t1.append(is_end)
-
-        reward_total += r_t1
-
-        if t == args.max_steps - 1:
-            is_end = True
-
-        transitions.append([s_t0, a_t0, r_t1])
-        states_t1.append(s_t1)
-        s_t0 = s_t1
-
-        if is_end:
-            if e % PLOT_REFRESH_RATE == 0:
-                all_scores.append(reward_total)
-            break
-
-    t_states_t1 = torch.FloatTensor(states_t1).to(args.device)
-    v_t1 = agent.model_c.forward(t_states_t1)
-    np_v_t1 = v_t1.cpu().data.numpy().squeeze()
-    for t in range(len(transitions)):
-        s_t0, a_t0, r_t1 = transitions[t]
-        is_end = end_t1[t]
-        delta = r_t1
-        if not is_end:
-            delta = r_t1 + args.gamma * np_v_t1[t]
-        agent.replay_memory.push([s_t0, a_t0, delta])
-
-
-    loss = loss_a = loss_c = 0
-    if len(agent.replay_memory) > args.batch_size:
-        loss_a, loss_c = agent.replay(e)
-        loss = loss_a + loss_c
-        if e % PLOT_REFRESH_RATE == 0:
-            all_losses.append(loss)
-            all_losses_a.append(loss_a)
-            all_losses_c.append(loss_c)
-
-    if e % args.target_update == 0:
-        agent.update_model_t()
-
-    if e % 10 == 0:
-        all_t.append(t)
-    print(
-        f'episode: {e}/{args.episodes} '
-        f'loss: {round(loss, 2)} '
-        f'loss_a: {round(loss_a, 2)} '
-        f'loss_c: {round(loss_c, 2)} '
-        f'score: {round(reward_total, 2)} '
-        f't: {t} '
-        f'e: {round(agent.epsilon, 3)} '
-        f'mem: {len(agent.replay_memory.memory)}')
-
-    if e % 100 == 0:
-        plt.clf()
-
-        plt.subplot(5, 1, 1)
-        plt.ylabel('Score')
-        plt.plot(all_scores)
-
-        plt.subplot(5, 1, 2)
-        plt.ylabel('Loss')
-        plt.plot(all_losses)
-
-        plt.subplot(5, 1, 3)
-        plt.ylabel('Loss Actor')
-        plt.plot(all_losses_a)
-
-        plt.subplot(5, 1, 4)
-        plt.ylabel('Loss Critic')
-        plt.plot(all_losses_c)
-
-        plt.subplot(5, 1, 5)
-        plt.ylabel('Steps')
-        plt.plot(all_t)
-
-        plt.xlabel('Episode')
-
-        if len(RUN_PATH) == 0:
-            plt.draw()
-            plt.pause(1e-1)  # pause a bit so that plots are updated
-        else:
-            plt.savefig(f'{RUN_PATH}/plt-{e}.png')
