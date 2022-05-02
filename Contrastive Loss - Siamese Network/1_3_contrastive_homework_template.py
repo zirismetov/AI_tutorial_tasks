@@ -27,8 +27,8 @@ BATCH_SIZE = 128
 LEARNING_RATE = 1e-4
 TRAIN_TEST_SPLIT = 0.8
 DEVICE = 'cuda'
-MAX_LEN = 0
-MAX_CLASSES = 0 # 0 = include all
+MAX_LEN = 500
+MAX_CLASSES = 30 # 0 = include all
 IS_DEBUG = False
 EMBEDDING_SIZE = 8
 MARGIN = 0.2
@@ -156,14 +156,14 @@ for stage in ['train', 'test']:
     for metric in ['loss', 'z', 'y', 'acc']:
         metrics[f'{stage}_{metric}'] = []
 ContrastiveLoss_fn = losses.ContrastiveLoss(neg_margin=MARGIN, distance=CosineSimilarity())
-for epoch in range(1, 100):
+for epoch in tqdm(range(1, 100)):
     metrics_epoch = {key: [] for key in metrics.keys()}
     for data_loader in [data_loader_train, data_loader_test]: # just for classification example
         stage = 'train'
         if data_loader == data_loader_test:
             stage = 'test'
 
-        for x, y_idx in tqdm(data_loader, desc=stage):
+        for x, y_idx in data_loader:
             x = x.to(DEVICE)
             y_idx = y_idx.squeeze().to(DEVICE)
             y_prim, z = model.forward(x)
@@ -288,6 +288,7 @@ for epoch in range(1, 100):
         )
 
         plt.tight_layout(pad=0.5)
-        plt.show()
         plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
+        # plt.show()
+
 
