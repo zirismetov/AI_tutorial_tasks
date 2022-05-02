@@ -43,13 +43,13 @@ parser.add_argument('-replay_buffer_size', default=20000, type=int)
 
 parser.add_argument('-hidden_size', default=512, type=int)
 
-parser.add_argument('-gamma', default=0.8, type=float)
+parser.add_argument('-gamma', default=0.7, type=float)
 parser.add_argument('-epsilon', default=0.99, type=float)
 parser.add_argument('-epsilon_min', default=0.1, type=float)
 parser.add_argument('-epsilon_decay', default=0.999, type=float)
 
-parser.add_argument('-max_steps', default=200, type=int)
-parser.add_argument('-target_update', default=500, type=int)
+parser.add_argument('-max_steps', default=250, type=int)
+parser.add_argument('-target_update', default=200, type=int)
 
 args, other_args = parser.parse_known_args()
 
@@ -62,11 +62,8 @@ plt.style.use('dark_background')
 if not torch.cuda.is_available():
     args.device = 'cpu'
 
-RUN_PATH = ''
-if not args.is_render:
-    RUN_PATH = f'ppo_{int(time.time())}'
-    if os.path.exists(RUN_PATH):
-        shutil.rmtree(RUN_PATH)
+RUN_PATH = f'./PPO_graphs/ppo_{int(time.time())}'
+if not os.path.exists(RUN_PATH):
     os.makedirs(RUN_PATH)
 
 
@@ -228,21 +225,12 @@ class A2CAgent:
 
         a_all = self.model_a.forward(s_t0)
         a_t = a_all[range(len(a_t0)), a_t0]
-        #         a_t = a_t.argmax(dim=1)
-        #         set_trace()
-        #         dist = Categorical(a_all)
-        #         a_theta = dist.log_prob(a_t)
 
         a_all_old = self.model_t.forward(s_t0).detach()
         a_t_old = a_all_old[range(len(a_t0)), a_t0]
-        #         a_t_old = a_t_old.argmax(dim=1)
-        #         dist = Categorical(a_all_old)
-        if e < args.target_update + 1:
-            a_t_old = a_t.clone().detach()
-        #         a_old_theta = dist.log_prob(a_t_old)
 
-        ratios = torch.exp(a_t - a_t_old)
-        clamp = torch.clamp(ratios, 1 - self.policy_clip, 1 + self.policy_clip) * A
+        ratios = torch.div(a_t, a_t_old)
+        clamp = torch.clamp(ratios, 1 - self.policy_clip, 1 + self.policy_clip)
         final = torch.min(ratios, clamp)
         loss_a = -(A * final)
         loss_a_mean = torch.mean(loss_a)
@@ -262,10 +250,139 @@ all_losses = []
 all_losses_a = []
 all_losses_c = []
 all_t = []
-
+all_scores_plot = []
 agent = A2CAgent(
     env.observation_space.shape[0], # first 2 are position in x axis and y axis(hieght) , other 2 are the x,y axis velocity terms, lander angle and angular velocity, left and right left contact points (bool)
     env.action_space.n
 )
 is_end = False
 PLOT_REFRESH_RATE = 10
+# BELOW CODE FOR LINUX ANIMATION SAVing
+def update_scene(num, frames, patch):
+    patch.set_data(frames[num])
+    return patch,
+
+def plot_animation(frames, repeat=False, interval=40 , show = False):
+    fig = plt.figure()
+    patch = plt.imshow(frames[0])
+    plt.axis('off')
+    anim = animation.FuncAnimation(
+        fig, update_scene, fargs=(frames, patch),
+        frames=len(frames), repeat=repeat, interval=interval)
+    anim.save('PPO.gif', writer='imagemagick', fps=30)
+    if show:
+        plt.show()
+    plt.close()
+    if os.path.exists("animation.gif"):
+        print('PPO animation saved')
+    return anim
+coll = []
+previos_coll = None
+from IPython.core.debugger import set_trace
+for e in range(args.episodes):
+    s_t0 = env.reset()
+    reward_total = 0
+    if coll:
+        previos_coll = coll.copy()
+    coll = []
+    transitions = []
+    states_t1 = []
+    end_t1 = []
+    is_recorded = False
+    for t in range(args.max_steps):
+        if args.is_render and len(all_scores):
+            if e >= 500 and (all_scores[-1] >=0 and all_scores[-2]>=0):
+                if previos_coll:
+                    plot_animation(previos_coll)
+                    #                     time.sleep(0.001)
+                    #                     previos_coll = []
+                    break
+            img = env.render(mode="rgb_array")
+            time.sleep(0.001)
+            coll.append(img)
+        #         set_trace()
+        a_t0 = agent.act(s_t0)
+        s_t1, r_t1, is_end, _ = env.step(a_t0)
+        end_t1.append(is_end)
+
+        reward_total += r_t1
+
+        if t == args.max_steps - 1:
+            is_end = True
+
+        transitions.append([s_t0, a_t0, r_t1])
+        states_t1.append(s_t1)
+        s_t0 = s_t1
+
+        if is_end:
+            all_scores.append(reward_total)
+            if e % PLOT_REFRESH_RATE == 0:
+                all_scores_plot.append(reward_total)
+            break
+
+    t_states_t1 = torch.FloatTensor(states_t1).to(args.device)
+    v_t1 = agent.model_c.forward(t_states_t1)
+    np_v_t1 = v_t1.cpu().data.numpy().squeeze()
+    for t in range(len(transitions)):
+        s_t0, a_t0, r_t1 = transitions[t]
+        is_end = end_t1[t]
+        delta = r_t1
+        if not is_end:
+            delta = r_t1 + args.gamma * np_v_t1[t]
+        agent.replay_memory.push([s_t0, a_t0,delta])
+
+
+    loss = loss_a = loss_c = 0
+    if len(agent.replay_memory) > args.batch_size:
+        loss_a, loss_c = agent.replay(e)
+        loss = loss_a + loss_c
+        if e % PLOT_REFRESH_RATE == 0:
+            all_losses.append(loss)
+            all_losses_a.append(loss_a)
+            all_losses_c.append(loss_c)
+
+    if e % args.target_update == 0:
+        agent.update_model_t()
+
+    if e % 10 == 0:
+        all_t.append(t)
+    print(
+        f'episode: {e}/{args.episodes} '
+        f'loss: {round(loss, 2)} '
+        f'loss_a: {round(loss_a, 2)} '
+        f'loss_c: {round(loss_c, 2)} '
+        f'score: {round(reward_total, 2)} '
+        f't: {t} '
+        f'e: {round(agent.epsilon, 3)} '
+        f'mem: {len(agent.replay_memory.memory)}')
+
+    if e % 100 == 0:
+        plt.clf()
+
+        plt.subplot(5, 1, 1)
+        plt.ylabel('Score')
+        plt.plot(all_scores_plot)
+
+        plt.subplot(5, 1, 2)
+        plt.ylabel('Loss')
+        plt.plot(all_losses)
+
+        plt.subplot(5, 1, 3)
+        plt.ylabel('Loss Actor')
+        plt.plot(all_losses_a)
+
+        plt.subplot(5, 1, 4)
+        plt.ylabel('Loss Critic')
+        plt.plot(all_losses_c)
+
+        plt.subplot(5, 1, 5)
+        plt.ylabel('Steps')
+        plt.plot(all_t)
+
+        plt.xlabel('Episode')
+
+        if len(RUN_PATH) == 0:
+            plt.draw()
+            plt.pause(1e-1)  # pause a bit so that plots are updated
+        else:
+            plt.savefig(f'{RUN_PATH}/plt-{e}.png')
