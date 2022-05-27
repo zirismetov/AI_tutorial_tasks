@@ -1,11 +1,11 @@
-# %%writefile hard_mining.py
-import argparse
+import argparse # pip3 install argparse
 import hashlib
 import os
 import pickle
 import time
-from tensorboardX import SummaryWriter
-from tensorboardX.summary import hparams
+import shutil
+from typing import List
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -15,12 +15,15 @@ from scipy.spatial.distance import cdist
 from torch.hub import download_url_to_file
 from tqdm import tqdm # pip install tqdm
 import random
-from datetime import datetime
+import sklearn.manifold
+
+from tensorboardX import SummaryWriter
+
+
 import matplotlib.pyplot as plt
 plt.rcParams["figure.figsize"] = (15, 10)
 plt.style.use('dark_background')
-from copy import copy
-from pytorch_metric_learning import samplers
+
 import torch.utils.data
 import scipy.misc
 import scipy.ndimage
@@ -29,20 +32,20 @@ from sklearn.model_selection import train_test_split
 
 
 parser = argparse.ArgumentParser(add_help=False)
-parser.add_argument('-run_path', default='', type=str)
+parser.add_argument('-run_path', default='exp', type=str)
+
 parser.add_argument('-num_epochs', default=100, type=int)
-parser.add_argument('-batch_size', default=128, type=int)
+parser.add_argument('-batch_size', default=64, type=int)
 parser.add_argument('-classes_count', default=20, type=int)
-parser.add_argument('-samples_per_class', default=10000, type=int)
-parser.add_argument('-run_name', default=f'run', type=str)
+parser.add_argument('-samples_per_class', default=1000, type=int)
 
 parser.add_argument('-learning_rate', default=1e-4, type=float)
 
-parser.add_argument('-z_size', default=64, type=int)
-parser.add_argument('-margin', default=0.8, type=float)
+parser.add_argument('-z_size', default=32, type=int)
+parser.add_argument('-margin', default=0.2, type=float)
 
 parser.add_argument(
-    '-is_debug', default=True, type=lambda x: (str(x).lower() == 'true'))
+    '-is_debug', default=False, type=lambda x: (str(x).lower() == 'true'))
 
 args, _ = parser.parse_known_args()
 
@@ -58,54 +61,30 @@ DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
 MAX_CLASSES = args.classes_count # 0 = include all
 IS_DEBUG = args.is_debug
-NOW_TIME = datetime.strftime(datetime.today(), "%Y-%m-%d_%H-%M")
 
 if len(RUN_PATH):
     RUN_PATH = f'{int(time.time())}_{RUN_PATH}'
-else:
-    RUN_PATH = f'C:/Users/Kekuzbek/PycharmProjects/AI_tutorial_tasks/34_Contrastive_Loss_Sample_mining/hard_mining/{NOW_TIME}'
-os.makedirs(RUN_PATH)
+    if os.path.exists(RUN_PATH):
+        shutil.rmtree(RUN_PATH)
+    os.makedirs(RUN_PATH)
+
+    tensorboard_writer = SummaryWriter(f'{RUN_PATH}/tb_{RUN_PATH}')
 
 if not torch.cuda.is_available() or IS_DEBUG:
-    MAX_LEN = 50 # per class for debugging
-    MAX_CLASSES = 20 # reduce number of classes for debugging
+    MAX_LEN = 300 # per class for debugging
+    MAX_CLASSES = 6 # reduce number of classes for debugging
     DEVICE = 'cpu'
-    BATCH_SIZE = 12
+    BATCH_SIZE = 66
 
-class TensorBoardSummaryWriter(SummaryWriter):
-    def __init__(self, logdir=None, comment='', purge_step=None,
-                 max_queue=10, flush_secs=10, filename_suffix='',
-                 write_to_disk=True, log_dir=None, **kwargs):
-        super().__init__(logdir, comment, purge_step, max_queue,
-                         flush_secs, filename_suffix, write_to_disk,
-                         log_dir, **kwargs)
+assert BATCH_SIZE % 4 == 0
 
-    def add_hparams(self, hparam_dict=None, metric_dict=None, name=None, global_step=None):
-        if type(hparam_dict) is not dict or type(metric_dict) is not dict:
-            raise TypeError('hparam_dict and metric_dict should be dictionary.')
-        hparam_dict = copy(hparam_dict)
-        for key in list(hparam_dict.keys()):
-            if type(hparam_dict[key]) not in [float, int, str]:
-                del hparam_dict[key]
-        exp, ssi, sei = hparams(hparam_dict, metric_dict)
-
-        self.file_writer.add_summary(exp)
-        self.file_writer.add_summary(ssi)
-        self.file_writer.add_summary(sei)
-        for k, v in metric_dict.items():
-            self.add_scalar(k, v, global_step)
-
-
-summary_writer = TensorBoardSummaryWriter(
-    logdir=RUN_PATH + '/tenorboard'
-)
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__() # 62 classes
         self.data = torchvision.datasets.EMNIST(
             root='../data',
             split='byclass',
-            train=(MAX_LEN == 0),
+            train=(MAX_LEN == 1000),
             download=True
         )
         class_to_idx = self.data.class_to_idx
@@ -118,33 +97,33 @@ class DatasetEMNIST(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         # list tuple np.array torch.FloatTensor
         pil_x, y_idx = self.data[idx]
-        np_x = np.array(pil_x)
+        np_x = np.transpose(np.array(pil_x)).astype(np.float16)
         np_x = np.expand_dims(np_x, axis=0) # (1, W, H)
-
-        x = torch.FloatTensor(np_x)
-        y = torch.LongTensor([y_idx])
-        return x, y
+        return np_x, y_idx
 
 
 dataset_full = DatasetEMNIST()
 
 labels_train, labels_test = train_test_split(
-    dataset_full.labels[-MAX_CLASSES:],
+    dataset_full.labels[:MAX_CLASSES],
     train_size=TRAIN_TEST_SPLIT,
     shuffle=True,
-    random_state=0
+    random_state=1
 )
 labels_count = dict((key, 0) for key in dataset_full.labels)
+labels_y_train = [dataset_full.labels.index(it) for it in labels_train]
+labels_y_test = [dataset_full.labels.index(it) for it in labels_test]
 
 print(
     f'labels_train: {labels_train} '
     f'labels_test: {labels_test} '
 )
+
 idx_train = []
 idx_test = []
 str_args = [str(it) for it in [MAX_LEN, MAX_CLASSES]]
 hash_args = hashlib.md5((''.join(str_args)).encode()).hexdigest()
-path_cache = f'{RUN_PATH}/cache_pkl/{hash_args}.pkl'
+path_cache = f'../data/{hash_args}.pkl'
 if os.path.exists(path_cache):
     print('loading from cache')
     with open(path_cache, 'rb') as fp:
@@ -152,7 +131,6 @@ if os.path.exists(path_cache):
 
 else:
     for idx, (x, y_idx) in tqdm(enumerate(dataset_full), 'splitting dataset', total=len(dataset_full)):
-        y_idx = y_idx.item()
         label = dataset_full.labels[y_idx]
         if MAX_LEN > 0: # for debugging
             if labels_count[label] >= MAX_LEN:
@@ -165,31 +143,88 @@ else:
         elif label in labels_test:
             idx_test.append(idx)
 
-    # with open(path_cache, 'wb') as fp:
-    #     pickle.dump((idx_train, idx_test), fp)
+    with open(path_cache, 'wb') as fp:
+        pickle.dump((idx_train, idx_test), fp)
 
 dataset_train = torch.utils.data.Subset(dataset_full, idx_train)
 dataset_test = torch.utils.data.Subset(dataset_full, idx_test)
 
-data_loader_train = torch.utils.data.DataLoader(
+class DataLoaderTriplet():
+    def __init__(
+            self,
+            dataset,
+            batch_size,
+            labels_y
+    ):
+        super().__init__()
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.labels_y = labels_y
+        self.idxes_used = []
+        self.reshuffle()
+
+    def reshuffle(self):
+        idx_free = np.random.permutation(len(self.dataset)).tolist()
+        label_free =  list(self.labels_y)
+        idx_used = []
+        idx_label = 0
+
+        while len(label_free):
+            if len(label_free) <= idx_label:
+                idx_label = 0
+            y_cur = label_free[idx_label]
+            idx_label += 1
+            choices = []
+            for idx in idx_free:
+                _, y = self.dataset[idx]
+                if y_cur == y:
+                    choices.append(idx)
+                    if len(choices) == 4:
+                        for choice_idx in choices:
+                            idx_used.append(choice_idx)
+                            idx_free.remove(choice_idx)
+                        break
+            if len(choices)<4:
+                label_free.remove(y_cur)
+        self.idxes_used = idx_used
+
+
+
+    def __len__(self):
+        return (len(self.idxes_used) // self.batch_size) - 1
+
+    def __iter__(self):
+        self.idx_batch = 0
+        return self
+
+    def __next__(self):
+        if self.idx_batch > len(self):
+            raise StopIteration()
+        idx_start = self.idx_batch * self.batch_size
+        idx_end = idx_start + self.batch_size
+        x_list = []
+        y_list = []
+        for idx in range(idx_start, idx_end):
+            idx_mapped = self.idxes_used[idx]
+            x, y = self.dataset[idx_mapped]
+            x_list.append(torch.FloatTensor(x))
+            y_list.append(torch.LongTensor([y]))
+        x = torch.stack(x_list)
+        y = torch.stack(y_list).squeeze()
+        self.idx_batch += 1
+        return x, y
+
+
+data_loader_train = DataLoaderTriplet(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=False,
-    sampler=samplers.MPerClassSampler(labels=labels_train,
-                                      m=3,
-                                      batch_size=BATCH_SIZE),
-    drop_last=(len(dataset_train) % BATCH_SIZE < 12)
-
+    labels_y=labels_y_train
 )
 
-data_loader_test = torch.utils.data.DataLoader(
+data_loader_test = DataLoaderTriplet(
     dataset=dataset_test,
     batch_size=BATCH_SIZE,
-    shuffle=False,
-    sampler=samplers.MPerClassSampler(labels=labels_test,
-                                      m=3,
-                                      batch_size=BATCH_SIZE),
-    drop_last=(len(dataset_test) % BATCH_SIZE < 12)
+    labels_y=labels_y_test
 )
 
 
@@ -197,24 +232,17 @@ class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = torchvision.models.resnet18( # 3, W, H
-            pretrained=True
+            pretrained=False
         )
         self.encoder.fc = torch.nn.Linear(
             in_features=self.encoder.fc.in_features,
             out_features=Z_SIZE
         )
-
-        # self.classifier = torch.nn.Sequential(
-        #     torch.nn.Linear(Z_SIZE, len(labels_train)),
-        #     torch.nn.Softmax(dim=-1)
-        # )
-
     def forward(self, x):
         z = self.encoder.forward(x.expand(x.size(0), 3, 28, 28))
         norm = torch.norm(z.detach(), p=2, dim=-1, keepdim=True)
         z = z / norm
-        y_prim=0
-        return y_prim, z
+        return z
 
 model = Model()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -226,81 +254,73 @@ for stage in ['train', 'test']:
     for metric in ['loss', 'x', 'z', 'y', 'acc', 'dist_pos', 'dist_neg']:
         metrics[f'{stage}_{metric}'] = []
 
-for epoch in range(EPOCHS):
+for epoch in range(1, 15):
+
     metrics_epoch = {key: [] for key in metrics.keys()}
+
     for data_loader in [data_loader_train, data_loader_test]: # just for classification example
         stage = 'train'
-        model.train()
-        torch.set_grad_enabled(True)
         if data_loader == data_loader_test:
             stage = 'test'
-            model.eval()
+            model = model.eval()
             torch.set_grad_enabled(False)
-        logits_with_labels_and_images = []
+        else:
+            if epoch > 1:
+                data_loader.reshuffle()
+            model = model.train()
+            torch.set_grad_enabled(True)
+
         for x, y_idx in tqdm(data_loader, desc=stage):
             x = x.to(DEVICE)
             y_idx = y_idx.squeeze().to(DEVICE)
-            y_idx_copy = torch.clone(y_idx).to(DEVICE)
-            y_prim, z = model.forward(x)
-            # for idx in range(len(y_idx_copy)):
-            #     y_label = dataset_full.labels[int(y_idx_copy[idx].item())]
-            #     if stage == 'train':
-            #         y_idx_copy[idx] = labels_train.index(y_label)
-            #     else:
-            #         y_idx_copy[idx] = labels_test.index(y_label)
-            # CCE_loss = torch.mean(torch.log(y_prim[:, y_idx_copy[range(len(y_idx_copy))]] + 1e-8))
+            z = model.forward(x)
+
             dist_pos = []
             dist_neg = []
             losses = []
-            for i in range(len(y_idx)):
+
+            for i in range(0, len(y_idx)-4, 4):
                 y_idx_i = y_idx[i]
                 z_not_used = z[i+1:]
                 y_not_used = y_idx[i+1:]
-                D_all = 1.0 - F.pairwise_distance(
+
+                D_all = F.pairwise_distance(
                     z[i].expand(z_not_used.size()),
                     z_not_used,
                     p=2
                 )
                 D_neg_all = D_all[y_not_used != y_idx_i]
-                if len(D_neg_all):
-                    j = torch.argmin(D_neg_all)
-                    D_n = D_neg_all[j]
-                    dist_neg += D_neg_all.cpu().data.numpy().tolist()
-                    losses.append(torch.maximum(MARGIN - D_n, torch.zeros_like(D_n)))
+                j = torch.argmin(D_neg_all)
+                D_n = D_neg_all[j]
+
                 D_pos_all = D_all[y_not_used == y_idx_i]
-                if len(D_pos_all):
-                    j = torch.argmax(D_pos_all)
-                    D_p = D_pos_all[j]
-                    losses.append(D_p)
+                j = torch.argmax(D_pos_all)
+                D_p = D_pos_all[j]
+                if D_p<D_n:
+                    dist_neg += D_neg_all.cpu().data.numpy().tolist()
                     dist_pos += D_pos_all.cpu().data.numpy().tolist()
-            if len(losses) == 0:
-                continue
-            loss = torch.mean(torch.stack(losses))
-            metrics_epoch[f'{stage}_dist_pos'].append(np.mean(dist_pos))
-            metrics_epoch[f'{stage}_dist_neg'].append(np.mean(dist_neg))
-            metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
+                    losses.append(torch.relu(D_p-D_n + MARGIN))
+            if losses:
+                loss = torch.mean(torch.stack(losses))
+                if data_loader == data_loader_train:
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+                metrics_epoch[f'{stage}_dist_pos'].append(np.mean(dist_pos))
+                metrics_epoch[f'{stage}_dist_neg'].append(np.mean(dist_neg))
+                metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
 
-            if data_loader == data_loader_train:
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
-
+        torch.set_grad_enabled(False)
+        model = model.eval()
+        for x, y_idx in tqdm(data_loader, desc=f'acc_{stage}'):
+            x = x.to(DEVICE)
+            z = model.forward(x)
             np_z = z.cpu().data.numpy()
             np_x = x.cpu().data.numpy()
-            np_y_idx = y_idx.cpu().data.numpy()
-            # np_y_prim = y_prim.cpu().data.numpy()
-
+            np_y_idx = y_idx.squeeze().cpu().data.numpy()
             metrics_epoch[f'{stage}_z'] += np_z.tolist()
             metrics_epoch[f'{stage}_y'] += np_y_idx.tolist()
             metrics_epoch[f'{stage}_x'] += np_x.tolist()
-
-            # for idx in range(len(np_y_idx)):
-            #     if len(logits_with_labels_and_images) < 2500:
-            #         logits_with_labels_and_images.append((
-            #             z.cpu().detach().numpy()[idx],
-            #             dataset_full.labels[np_y_idx[idx]],
-            #             x.data.cpu().numpy()[idx]
-            #         ))
 
         # calculate centers of the mass
         np_zs = np.array(metrics_epoch[f'{stage}_z'])
@@ -325,64 +345,27 @@ for epoch in range(EPOCHS):
         np_y_prim_idx = np.array(y_prim_idx)
         acc = np.mean((np_y_prim_idx == np_ys) * 1.0)
         metrics_epoch[f'{stage}_acc'] = [acc]
-        # embs, labels, imgs = list(zip(*logits_with_labels_and_images))
-        # summary_writer.add_embedding(
-        #     mat=np.array(embs),
-        #     metadata=list(labels),
-        #     label_img=np.array(imgs),
-        #     tag= f'{stage}_logits',
-        #     global_step=epoch
-        # )
+
+
 
     metrics_strs = []
-    metrics_mean = {}
     for key in metrics_epoch.keys():
         if '_z' not in key and '_y' not in key:
             value = 0
             if len(metrics_epoch[key]):
                 value = np.mean(metrics_epoch[key])
             metrics[key].append(value)
-            metrics_mean[key] = value
-            summary_writer.add_scalar( #ADD_SCALAR is for plots
-                scalar_value=value,
-                tag = key,
-                global_step=epoch
-            )
             metrics_strs.append(f'{key}: {round(value, 2)}')
-
-    summary_writer.add_hparams(
-        hparam_dict=args.__dict__,
-        metric_dict=metrics_mean,
-        name=args.run_name,
-        global_step=epoch
-    )
-    np_z =np.array(metrics_epoch['train_z'])
-    np_x =np.array(metrics_epoch['train_x'])
-    np_y =np.array(metrics_epoch['train_y'])
-    labels = [dataset_full.labels[it] for it in np_y]
-    summary_writer.add_embedding(
-        np_z,
-        labels,
-        label_img=np_x,
-        global_step=epoch,
-        tag='train_embs'
-    )
-    summary_writer.flush()
-    if os.path.exists(f'{RUN_PATH}/logs_{NOW_TIME}.txt'):
-        with open(f'{RUN_PATH}/logs_{NOW_TIME}.txt', 'a') as f:
-            f.write(f'epoch: {epoch} {" ".join(metrics_strs)} \n')
-    else:
-        with open(f'{RUN_PATH}/logs_{NOW_TIME}.txt', 'w+') as f:
-            f.write(f'epoch: {epoch} {" ".join(metrics_strs)} \n')
+            tensorboard_writer.add_scalar(tag=key, scalar_value=value, global_step=epoch)
     print(f'epoch: {epoch} {" ".join(metrics_strs)}')
 
-    plt.clf()
+    plt.clf() # BUGFIX!! scatter is remembered even when new subplot is made
 
     plt.subplot(221) # row col idx
     plts = []
     c = 0
     for key, value in metrics.items():
-        if '_z' in key or '_y' in key:
+        if '_z' in key or '_y' in key or '_dist' in key or 'test_' in key:
             continue
         plts += plt.plot(value, f'C{c}', label=key)
         ax = plt.twinx()
@@ -394,13 +377,14 @@ for epoch in range(EPOCHS):
         plt.subplot(8, 6, j) # row col idx
         color = 'green' if np_y_idx[i] == np_y_prim_idx[i] else 'red'
         plt.title(f"y: {dataset_full.labels[np_y_idx[i]]} y_prim: {dataset_full.labels[np_y_prim_idx[i]]}", color=color)
-        plt.imshow(np.transpose(np_x[i][0]), cmap='Greys')
+        plt.imshow(np_x[i][0], cmap='Greys')
 
     plt.subplot(223) # row col idx
 
-    pca = sklearn.decomposition.KernelPCA(n_components=2)
 
-    MAX_POINTS = 1000
+    pca = sklearn.decomposition.PCA(n_components=2)
+
+    MAX_POINTS = 100
     plt.title('train_z')
     np_z = np.array(metrics_epoch[f'train_z'])
     np_z = pca.fit_transform(np_z)
@@ -408,7 +392,7 @@ for epoch in range(EPOCHS):
     labels = [dataset_full.labels[idx] for idx in np_y_idx[:MAX_POINTS]]
     set_labels = list(set(labels))
     c = [labels.index(it) for it in labels]
-    scatter = plt.scatter(np_z[:MAX_POINTS, -1], np_z[:MAX_POINTS, -2], c=c, cmap=plt.get_cmap('prism'))
+    scatter = plt.scatter(np_z[:MAX_POINTS, 0], np_z[:MAX_POINTS, 1], c=c, cmap=plt.get_cmap('rainbow'))
     plt.legend(
         handles=scatter.legend_elements()[0],
         loc='lower left',
@@ -418,6 +402,7 @@ for epoch in range(EPOCHS):
         labels=set_labels
     )
 
+    pca = sklearn.decomposition.PCA(n_components=2)
 
     plt.subplot(224) # row col idx
 
@@ -428,7 +413,7 @@ for epoch in range(EPOCHS):
     labels = [dataset_full.labels[idx] for idx in np_y_idx[:MAX_POINTS]]
     set_labels = list(set(labels))
     c = [labels.index(it) for it in labels]
-    scatter = plt.scatter(np_z[:MAX_POINTS, -1], np_z[:MAX_POINTS, -2], c=c, cmap=plt.get_cmap('prism'))
+    scatter = plt.scatter(np_z[:MAX_POINTS, 0], np_z[:MAX_POINTS, 1], c=c, cmap=plt.get_cmap('rainbow'))
     plt.legend(
         handles=scatter.legend_elements()[0],
         loc='lower left',
@@ -441,14 +426,25 @@ for epoch in range(EPOCHS):
     plt.tight_layout(pad=0.5)
 
 
-    # if not IS_DEBUG:
-    #     plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
-        # torch.save(model.state_dict(), f'{RUN_PATH}/model-{epoch}.pt')
-    plt.show()
-# else:
-#     # if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'test_loss'][-1]):
-#     #     exit()
+    if len(RUN_PATH) == 0:
+        plt.show()
+    else:
+        if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'test_loss'][-1]):
+            exit()
+        np_z =np.array(metrics_epoch['train_z'])
+        np_x =np.array(metrics_epoch['train_x'])
+        np_y =np.array(metrics_epoch['train_y'])
+        labels = [dataset_full.labels[it] for it in np_y]
+        tensorboard_writer.add_embedding(
+            np_z,
+            labels,
+            label_img=np_x,
+            global_step=epoch,
+            tag='train_embs'
+        )
+        tensorboard_writer.flush()
 
-#     # save model weights
-#     plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
+        # save model weights
+        plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
+        #torch.save(model.state_dict(), f'{RUN_PATH}/model-{epoch}.pt')
 
