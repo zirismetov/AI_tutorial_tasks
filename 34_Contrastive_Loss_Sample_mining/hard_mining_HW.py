@@ -13,14 +13,15 @@ import matplotlib
 import torchvision
 from scipy.spatial.distance import cdist
 from torch.hub import download_url_to_file
-from tqdm import tqdm # pip install tqdm
+from tqdm import tqdm  # pip install tqdm
 import random
 from datetime import datetime
 import matplotlib.pyplot as plt
+
 plt.rcParams["figure.figsize"] = (15, 10)
 plt.style.use('dark_background')
 from copy import copy
-
+from pytorch_metric_learning.samplers import MPerClassSampler
 from sklearn.manifold import TSNE
 
 import torch.utils.data
@@ -29,7 +30,6 @@ import scipy.ndimage
 import sklearn.decomposition
 from sklearn.model_selection import train_test_split
 
-
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('-run_path', default='', type=str)
 parser.add_argument('-num_epochs', default=100, type=int)
@@ -37,9 +37,7 @@ parser.add_argument('-batch_size', default=128, type=int)
 parser.add_argument('-classes_count', default=20, type=int)
 parser.add_argument('-samples_per_class', default=10000, type=int)
 parser.add_argument('-run_name', default=f'run', type=str)
-
 parser.add_argument('-learning_rate', default=1e-4, type=float)
-
 parser.add_argument('-z_size', default=32, type=int)
 parser.add_argument('-margin', default=0.8, type=float)
 
@@ -58,21 +56,22 @@ TRAIN_TEST_SPLIT = 0.8
 
 DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
-MAX_CLASSES = args.classes_count # 0 = include all
+MAX_CLASSES = args.classes_count  # 0 = include all
 IS_DEBUG = args.is_debug
-NOW_TIME = datetime.strftime(datetime.today(), "%Y-%m-%d_%H-%M")
+NOW_TIME = datetime.strftime(datetime.today(), "%Y-%m-%d_%H-%M-%S")
 
 if len(RUN_PATH):
     RUN_PATH = f'{int(time.time())}_{RUN_PATH}'
 else:
-    RUN_PATH = f'/content/drive/MyDrive/zafar_iris_folder/hard_mining_hw/{NOW_TIME}'
+    RUN_PATH = f'./hard_mining_hw/{NOW_TIME}'
 os.makedirs(RUN_PATH)
 
 if not torch.cuda.is_available() or IS_DEBUG:
-    MAX_LEN = 100 # per class for debugging
-    MAX_CLASSES = 10 # reduce number of classes for debugging
+    MAX_LEN = 100  # per class for debugging
+    MAX_CLASSES = 10  # reduce number of classes for debugging
     DEVICE = 'cpu'
     BATCH_SIZE = 12
+
 
 class TensorBoardSummaryWriter(SummaryWriter):
     def __init__(self, logdir=None, comment='', purge_step=None,
@@ -101,9 +100,11 @@ class TensorBoardSummaryWriter(SummaryWriter):
 summary_writer = TensorBoardSummaryWriter(
     logdir=RUN_PATH + '/tenorboard'
 )
+
+
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
-        super().__init__() # 62 classes
+        super().__init__()  # 62 classes
         self.data = torchvision.datasets.EMNIST(
             root='../data',
             split='byclass',
@@ -121,7 +122,7 @@ class DatasetEMNIST(torch.utils.data.Dataset):
         # list tuple np.array torch.FloatTensor
         pil_x, y_idx = self.data[idx]
         np_x = np.array(pil_x)
-        np_x = np.expand_dims(np_x, axis=0) # (1, W, H)
+        np_x = np.expand_dims(np_x, axis=0)  # (1, W, H)
 
         x = torch.FloatTensor(np_x)
         y = torch.LongTensor([y_idx])
@@ -156,7 +157,7 @@ else:
     for idx, (x, y_idx) in tqdm(enumerate(dataset_full), 'splitting dataset', total=len(dataset_full)):
         y_idx = y_idx.item()
         label = dataset_full.labels[y_idx]
-        if MAX_LEN > 0: # for debugging
+        if MAX_LEN > 0:  # for debugging
             if labels_count[label] >= MAX_LEN:
                 if all(it >= MAX_LEN for it in labels_count.values()):
                     break
@@ -172,18 +173,40 @@ else:
 
 dataset_train = torch.utils.data.Subset(dataset_full, idx_train)
 dataset_test = torch.utils.data.Subset(dataset_full, idx_test)
+# sampler = pl.MPerClassSampler(labels= )
+sampler_labels_train = []
+sampler_labels_test = []
+for train_idx in dataset_train.indices:
+    _, l_idx = dataset_train.dataset.data[train_idx]
+    l = dataset_full.labels[l_idx]
+    sampler_labels_train.append(l)
+sampler = MPerClassSampler(labels=sampler_labels_train,
+                           m=3,
+                           length_before_new_iter=len(dataset_train.indices),
 
+                           )
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=True,
+    # shuffle=True,
+    sampler=sampler,
     drop_last=(len(dataset_train) % BATCH_SIZE < 12)
 )
 
+for test_idx in dataset_test.indices:
+    _, l_idx = dataset_test.dataset.data[test_idx]
+    l = dataset_full.labels[l_idx]
+    sampler_labels_test.append(l)
+sampler = MPerClassSampler(labels=sampler_labels_test,
+                           m=3,
+                           length_before_new_iter=len(dataset_test.indices),
+
+                           )
 data_loader_test = torch.utils.data.DataLoader(
     dataset=dataset_test,
     batch_size=BATCH_SIZE,
-    shuffle=True,
+    shuffle=False,
+    sampler=sampler,
     drop_last=(len(dataset_test) % BATCH_SIZE < 12)
 )
 
@@ -191,7 +214,7 @@ data_loader_test = torch.utils.data.DataLoader(
 class Model(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.encoder = torchvision.models.resnet18( # 3, W, H
+        self.encoder = torchvision.models.resnet18(  # 3, W, H
             pretrained=True
         )
         self.encoder.fc = torch.nn.Linear(
@@ -210,6 +233,7 @@ class Model(torch.nn.Module):
         y_prim = self.classifier.forward(z)
         return y_prim, z
 
+
 model = Model()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
@@ -222,10 +246,12 @@ for stage in ['train', 'test']:
 
 for epoch in range(EPOCHS):
     metrics_epoch = {key: [] for key in metrics.keys()}
-    for data_loader in [data_loader_train, data_loader_test]: # just for classification example
+    for data_loader in [data_loader_train, data_loader_test]:  # just for classification example
         stage = 'train'
+        model.train()
         if data_loader == data_loader_test:
             stage = 'test'
+            model.eval()
         logits_with_labels_and_images = []
         for x, y_idx in tqdm(data_loader, desc=stage):
             x = x.to(DEVICE)
@@ -253,7 +279,6 @@ for epoch in range(EPOCHS):
                 D_n = D_neg_all[j]
 
                 D_pos_all = D_all[y_idx == y_idx_i]
-                comp_loss = 0
                 """
                 first version was: 
                 if D_n < (D_p + MARGIN):
@@ -264,25 +289,23 @@ for epoch in range(EPOCHS):
                             losses.append(D_p) 
                     losses.append(0.5*CCE_loss)
                 """
-                if len(D_pos_all) > 1 :
+                if len(D_pos_all) > 1:
                     j = torch.argmax(D_pos_all)
                     D_p = D_pos_all[j]
                     D_pos_all = D_pos_all[D_pos_all != 0]
                     if D_n < (D_p + MARGIN):
                         dist_neg += D_neg_all.cpu().data.numpy().tolist()
-                        comp_loss += torch.maximum(MARGIN - D_n, torch.zeros_like(D_n))
+                        losses.append(torch.maximum(MARGIN - D_n, torch.zeros_like(D_n)))
                         if D_p > MARGIN:
                             dist_pos += D_pos_all.cpu().data.numpy().tolist()
-                            comp_loss += D_p
-                    comp_loss += -0.5*CCE_loss
-                    losses.append(comp_loss)
+                            losses.append(D_p)
 
             loss = torch.mean(torch.stack(losses))
             metrics_epoch[f'{stage}_dist_pos'].append(np.mean(dist_pos))
             metrics_epoch[f'{stage}_dist_neg'].append(np.mean(dist_neg))
             metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
 
-            if data_loader == data_loader_train:
+            if model.training:
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -316,7 +339,7 @@ for epoch in range(EPOCHS):
             dists_to_centers = cdist(
                 np.array(list(centers_by_classes.values())),
                 np.expand_dims(z, axis=0),
-                metric='cosine'
+                metric='euclidean'
             ).squeeze()
             idx_closest = np.argmin(dists_to_centers)
             y_prim_idx_each = list(centers_by_classes.keys())[idx_closest]
@@ -330,7 +353,7 @@ for epoch in range(EPOCHS):
             mat=np.array(embs),
             metadata=list(labels),
             label_img=np.array(imgs),
-            tag= f'{stage}_logits',
+            tag=f'{stage}_logits',
             global_step=epoch
         )
 
@@ -343,9 +366,9 @@ for epoch in range(EPOCHS):
                 value = np.mean(metrics_epoch[key])
             metrics[key].append(value)
             metrics_mean[key] = value
-            summary_writer.add_scalar( #ADD_SCALAR is for plots
+            summary_writer.add_scalar(  # ADD_SCALAR is for plots
                 scalar_value=value,
-                tag = key,
+                tag=key,
                 global_step=epoch
             )
             metrics_strs.append(f'{key}: {round(value, 2)}')
@@ -367,7 +390,7 @@ for epoch in range(EPOCHS):
 
     plt.clf()
 
-    plt.subplot(221) # row col idx
+    plt.subplot(221)  # row col idx
     plts = []
     c = 0
     for key, value in metrics.items():
@@ -380,12 +403,12 @@ for epoch in range(EPOCHS):
     plt.legend(plts, [it.get_label() for it in plts])
 
     for i, j in enumerate([4, 5, 6, 16, 17, 18, 10, 11, 12, 22, 23, 24]):
-        plt.subplot(8, 6, j) # row col idx
+        plt.subplot(8, 6, j)  # row col idx
         color = 'green' if np_y_idx[i] == np_y_prim_idx[i] else 'red'
         plt.title(f"y: {dataset_full.labels[np_y_idx[i]]} y_prim: {dataset_full.labels[np_y_prim_idx[i]]}", color=color)
         plt.imshow(np.transpose(np_x[i][0]), cmap='Greys')
 
-    plt.subplot(223) # row col idx
+    plt.subplot(223)  # row col idx
 
     pca = TSNE(n_components=2)
 
@@ -407,8 +430,7 @@ for epoch in range(EPOCHS):
         labels=set_labels
     )
 
-
-    plt.subplot(224) # row col idx
+    plt.subplot(224)  # row col idx
 
     plt.title('test_z')
     np_z = np.array(metrics_epoch[f'test_z'])
@@ -428,7 +450,6 @@ for epoch in range(EPOCHS):
     )
 
     plt.tight_layout(pad=0.5)
-
 
     if not IS_DEBUG:
         plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
