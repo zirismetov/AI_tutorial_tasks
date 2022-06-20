@@ -19,7 +19,8 @@ plt.style.use('dark_background')
 import torch.utils.data
 import sklearn.decomposition
 from sklearn.model_selection import train_test_split
-
+import torch.nn.functional as F
+from IPython import embed
 
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('-run_path', default='', type=str)
@@ -240,22 +241,169 @@ class Model(torch.nn.Module):
 class StaticProxyNCA(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        #TODO
+        self.proxies = torch.nn.Parameter(
+            torch.FloatTensor(len(labels_train), Z_SIZE)
+        )
+        torch.nn.init.uniform_(self.proxies)
 
     def forward(self, z, y_idx):
-        #TODO
-        loss = 0
+        prxies = F.normalize(self.proxies, p=2, dim=-1)
+        y_rel = []
+        for y_j in y_idx:
+            y_j_rel = (y_to_relative_y_train == y_j).nonzero().item()
+            y_rel.append(y_j_rel)
+        y_rel = torch.LongTensor(y_rel)
+        losses = []
+        for i in range (0, len(x) -3 , 3):
+            y_a = y_rel[i]
+            Y_all = y_rel[i:]
+            Z_all = z[i:]
+            Z_pos = Z_all[Y_all == y_a]
+            prox_p = prxies[y_a]
+            D_p_all = F.pairwise_distance(
+                prox_p.expand(  Z_pos.size()),
+                Z_pos
+            )
+            j_p = torch.argmax(D_p_all)
+            D_p = D_p_all[j_p]
+            z_a = Z_pos[j_p]
+            D_n_all = F.pairwise_distance(
+                z_a.expand(prxies.size()),
+                prxies
+            )
+            loss = torch.mean(-torch.log(torch.exp(-D_p) / torch.sum(torch.exp(-D_n_all)) ))
+            losses.append(loss)
+        loss = torch.mean(torch.stack(losses))
         return loss
-
+# Y_not_a = y_rel[i + 1:]
+# Z_not_a = z[i + 1:]
+# Z_pos = Z_not_a[Y_not_a==y_a]
+# Z_neg = Z_not_a[Y_not_a!=y_a]
+# def expand_dims(var, dim=0):
+#     """ Is similar to [numpy.expand_dims](https://docs.scipy.org/doc/numpy/reference/generated/numpy.expand_dims.html).
+#         var = torch.range(0, 9).view(-1, 2)
+#         torch.expand_dims(var, 0).size()
+#         # (1, 5, 2)
+#     """
+#     sizes = list(var.size())
+#     sizes.insert(dim, 1)
+#     return var.view(*sizes)
+# def comparison_mask(a_labels, b_labels):
+#     """Computes boolean mask for distance comparisons"""
+#     return torch.eq(expand_dims(a_labels, 1),
+#                     expand_dims(b_labels, 0))
+# class MagnetLoss(torch.nn.Module):
+#     def __init__(self, D=12, M=4, alpha=7.18):
+#         super().__init__()
+#
+#         self.D = D
+#         self.M = M
+#         self.alpha = alpha
+#
+#     def forward(self, logits, classes, m, d, alpha=1.0):
+#         GPU_INT_DTYPE = torch.cuda.IntTensor
+#         GPU_LONG_DTYPE = torch.cuda.LongTensor
+#         GPU_FLOAT_DTYPE = torch.cuda.FloatTensor
+#         """
+#         :param  indices     The index of each embedding
+#         :param  outputs     The set of embeddings
+#         :param  clusters    Cluster assignments for each index
+#         :return Loss        Magnet loss calculated for current batch
+#         """
+#         self.logits = logits
+#         self.classes = torch.from_numpy(classes).type(GPU_LONG_DTYPE)
+#         self.clusters, _ = torch.sort(torch.arange(0, float(m)).repeat(d))
+#         self.clusters = self.clusters.type(GPU_INT_DTYPE)
+#         self.cluster_classes = self.classes[0:m * d:d]
+#         self.n_clusters = m
+#         self.alpha = alpha
+#
+#         # Take cluster means within the batch
+#         cluster_examples = torch.chunk(self.logits, self.n_clusters)
+#
+#         cluster_means = torch.stack([torch.mean(x, dim=0) for x in cluster_examples])
+#
+#         sample_costs = F.pairwise_distance(cluster_means, expand_dims(logits, 1))
+#
+#         clusters_tensor = self.clusters.type(GPU_FLOAT_DTYPE)
+#         n_clusters_tensor = torch.arange(0, self.n_clusters).type(GPU_FLOAT_DTYPE)
+#
+#         intra_cluster_mask = torch.autograd.Variable(comparison_mask(clusters_tensor, n_clusters_tensor).type(GPU_FLOAT_DTYPE))
+#
+#         intra_cluster_costs = torch.sum(intra_cluster_mask * sample_costs, dim=1)
+#
+#         N = logits.size()[0]
+#
+#         variance = torch.sum(intra_cluster_costs) / float(N - 1)
+#
+#         var_normalizer = -1 / (2 * variance ** 2)
+#
+#         # Compute numerator
+#         numerator = torch.exp(var_normalizer * intra_cluster_costs - self.alpha)
+#
+#         classes_tensor = self.classes.type(GPU_FLOAT_DTYPE)
+#         cluster_classes_tensor = self.cluster_classes.type(GPU_FLOAT_DTYPE)
+#
+#         # Compute denominator
+#         diff_class_mask = torch.autograd.Variable(comparison_mask(classes_tensor, cluster_classes_tensor).type(GPU_FLOAT_DTYPE))
+#
+#         diff_class_mask = 1 - diff_class_mask  # Logical not on ByteTensor
+#
+#         denom_sample_costs = torch.exp(var_normalizer * sample_costs)
+#
+#         denominator = torch.sum(diff_class_mask * denom_sample_costs, dim=1)
+#
+#         epsilon = 1e-8
+#
+#         losses = F.relu(-torch.log(numerator / (denominator + epsilon) + epsilon))
+#
+#         total_loss = torch.mean(losses)
+#
+#         return total_loss, losses
 
 class DynamicProxyNCA(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        #TODO
+        self.proxies = torch.nn.Parameter(
+            torch.FloatTensor(int(len(labels_train) * CLASS_RATIO), Z_SIZE)
+        )
+        torch.nn.init.uniform_(self.proxies)
 
     def forward(self, z, y_idx):
-        # TODO
-        loss = 0
+        prxies = F.normalize(self.proxies, p=2, dim=-1)
+        y_rel = []
+        for y_j in y_idx:
+            y_j_rel = (y_to_relative_y_train == y_j).nonzero().item()
+            y_rel.append(y_j_rel)
+        y_rel = torch.LongTensor(y_rel)
+        losses = []
+        for i in range(0, len(x) - 3, 3):
+            y_a = y_rel[i]
+            Y_all = y_rel[i:]
+            Z_all = z[i:]
+            Z_p = Z_all[Y_all == y_a]
+            z_a = z[i]
+            D_prox = F.pairwise_distance(
+                z_a.expand(prxies.size()),
+                prxies
+            )
+            y_prox = torch.argmin(D_prox)
+
+            prox_p = prxies[y_prox]
+            D_p_all = F.pairwise_distance(
+                prox_p.expand(Z_p.size()),
+                Z_p
+            )
+            j_p = torch.argmax(D_p_all)
+            D_p = D_p_all[j_p]
+            z_a = Z_p[j_p]
+            D_n_all = F.pairwise_distance(
+                z_a.expand(prxies.size()),
+                prxies
+            )
+            loss = torch.mean(-torch.log(torch.exp(-D_p) / torch.sum(torch.exp(-D_n_all))))
+            losses.append(loss)
+        loss = torch.mean(torch.stack(losses))
         return loss
 
 
@@ -292,7 +440,7 @@ for epoch in range(1, 100):
             z = model.forward(x)
 
             if data_loader == data_loader_train:
-                loss = loss_fn.forward(z, y_idx)
+                loss = loss_fn.forward(z, y_idx, m=12, d=4)
                 metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
 
                 loss.backward()

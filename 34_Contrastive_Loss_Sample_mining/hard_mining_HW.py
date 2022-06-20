@@ -183,7 +183,6 @@ for train_idx in dataset_train.indices:
 sampler = MPerClassSampler(labels=sampler_labels_train,
                            m=3,
                            length_before_new_iter=len(dataset_train.indices),
-
                            )
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
@@ -200,7 +199,6 @@ for test_idx in dataset_test.indices:
 sampler = MPerClassSampler(labels=sampler_labels_test,
                            m=3,
                            length_before_new_iter=len(dataset_test.indices),
-
                            )
 data_loader_test = torch.utils.data.DataLoader(
     dataset=dataset_test,
