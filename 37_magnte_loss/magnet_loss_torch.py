@@ -195,7 +195,7 @@ class Magnet_loss(torch.nn.Module):
             z_not_y = z[torch.where(y_idx != y_classes[i])]
             k_means = KMeans(n_clusters=args.K, n_init=10, max_iter=20)
             k_cluster = k_means.fit_predict(X=z_y.detach())
-            y_dist = torch.cdist(z_y, torch.FloatTensor(k_means.cluster_centers_), p=2**2)
+            y_dist = torch.pow(torch.cdist(z_y, torch.FloatTensor(k_means.cluster_centers_), p=2))
             clusters[y_classes[i]] = k_cluster.labels_
 
 
