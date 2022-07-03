@@ -440,7 +440,7 @@ for epoch in range(1, 100):
             z = model.forward(x)
 
             if data_loader == data_loader_train:
-                loss = loss_fn.forward(z, y_idx, m=12, d=4)
+                loss = loss_fn.forward(z, y_idx)
                 metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
 
                 loss.backward()
