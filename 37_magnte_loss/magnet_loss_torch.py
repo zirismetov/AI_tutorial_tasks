@@ -187,7 +187,8 @@ class Magnet_loss(torch.nn.Module):
 
     def forward(self, z, y_idx):
         y_classes = np.unique(y_idx.detach().numpy())
-        clusters = np.zeros([MAX_CLASSES * self.K, z.shape[1]])
+        clusters = []
+        mu_z = []
         seed_cluster = np.random.choice(MAX_CLASSES * self.K)
         for i in range(len(y_classes)):
             y_i = torch.where(y_idx == y_classes[i])
@@ -195,9 +196,15 @@ class Magnet_loss(torch.nn.Module):
             z_not_y = z[torch.where(y_idx != y_classes[i])]
             k_means = KMeans(n_clusters=args.K, n_init=10, max_iter=20)
             k_cluster = k_means.fit_predict(X=z_y.detach())
-            y_dist = torch.pow(torch.cdist(z_y, torch.FloatTensor(k_means.cluster_centers_), p=2))
-            clusters[y_classes[i]] = k_cluster.labels_
+            z_y_dist = torch.pow(torch.cdist(z_y, torch.FloatTensor(k_means.cluster_centers_), p=2), 2)
+            clusters.append(z_y_dist)
+            mu_z.append(torch.mean(z_y, dim=0))
 
+        mu_z = torch.vstack(mu_z)
+        random_cluster = clusters[seed_cluster]
+
+        print()
+        loss = torch.relu()
 
 
 model = Model()
