@@ -2,6 +2,7 @@ import argparse  # pip3 install argparse
 import hashlib
 import os
 import pickle
+import random
 import time
 import shutil
 
@@ -33,10 +34,13 @@ parser.add_argument('-classes_count', default=20, type=int)
 parser.add_argument('-samples_per_class', default=600, type=int)
 
 parser.add_argument('-learning_rate', default=1e-4, type=float)
-
+from torch.autograd import Variable
 parser.add_argument('-z_size', default=32, type=int)
 parser.add_argument('-margin', default=0.2, type=float)
 parser.add_argument('-K', default=5, type=int)
+parser.add_argument('-M', default=8, type=int)
+parser.add_argument('-D', default=8, type=int)
+
 parser.add_argument(
     '-is_debug', default=False, type=lambda x: (str(x).lower() == 'true'))
 
@@ -49,7 +53,7 @@ LEARNING_RATE = args.learning_rate
 Z_SIZE = args.z_size
 MARGIN = args.margin
 TRAIN_TEST_SPLIT = 0.8
-
+args.batch_size = args.M * args.D
 CLASS_RATIO = 1.5
 
 DEVICE = 'cuda'
@@ -67,7 +71,7 @@ if not torch.cuda.is_available() or IS_DEBUG:
     MAX_LEN = 300  # per class for debugging
     MAX_CLASSES = 6  # reduce number of classes for debugging
     DEVICE = 'cpu'
-    BATCH_SIZE = 66
+    BATCH_SIZE = 64
 
 
 class DatasetEMNIST(torch.utils.data.Dataset):
@@ -148,7 +152,8 @@ dataset_test = torch.utils.data.Subset(dataset_full, idx_test)
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=False
+    shuffle=False,
+    drop_last=True
     # labels_y=labels_y_train
 )
 
@@ -178,34 +183,13 @@ class Model(torch.nn.Module):
 
 
 class Magnet_loss(torch.nn.Module):
-    def __init__(self, K=3, M=3, D=4):
+    def __init__(self):
         super(Magnet_loss, self).__init__()
-        self.K = K
-        self.M = M
-        self.D = D
 
 
     def forward(self, z, y_idx):
-        y_classes = np.unique(y_idx.detach().numpy())
-        clusters = []
-        mu_z = []
-        seed_cluster = np.random.choice(MAX_CLASSES * self.K)
-        for i in range(len(y_classes)):
-            y_i = torch.where(y_idx == y_classes[i])
-            z_y = z[y_i]
-            z_not_y = z[torch.where(y_idx != y_classes[i])]
-            k_means = KMeans(n_clusters=args.K, n_init=10, max_iter=20)
-            k_cluster = k_means.fit_predict(X=z_y.detach())
-            z_y_dist = torch.pow(torch.cdist(z_y, torch.FloatTensor(k_means.cluster_centers_), p=2), 2)
-            clusters.append(z_y_dist)
-            mu_z.append(torch.mean(z_y, dim=0))
-
-        mu_z = torch.vstack(mu_z)
-        random_cluster = clusters[seed_cluster]
-
-        print()
-        loss = torch.relu()
-
+        losses = 0
+        return losses
 
 model = Model()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -217,13 +201,67 @@ for stage in ['train', 'test']:
     for metric in ['loss', 'x', 'z', 'y', 'acc']:
         metrics[f'{stage}_{metric}'] = []
 
-for epoch in range(1, 100):
+# collect cdist
+model = model.eval()
+list_of_embs = []
+K_cluster_centrs = []
+Dist_all = []
+init = True
+with torch.no_grad():
+    # collect emb and k_clusters
+    for x, y_idx in tqdm(data_loader_train, desc=stage):
+        x = x.to(DEVICE)
+        y_idx = y_idx.squeeze().to(DEVICE)
+        z = model.forward(x)
+        list_of_embs.append({'emb': z.detach(), 'label':y_idx})
+        if init:
+            k_means = KMeans(n_clusters=args.K).fit(z.detach(), y_idx)
+            init = False
+        else:
+            k_means = KMeans(n_clusters=args.K, init=k_means.cluster_centers_).fit(z.detach(), y_idx)
+        K_cluster_centrs.append(k_means.cluster_centers_)
+
+for idx in range(len(K_cluster_centrs)):
+    D_solo = torch.from_numpy(K_cluster_centrs[idx])
+    if idx == len(K_cluster_centrs):
+        # if last cluster
+        D_others = K_cluster_centrs[:idx]
+    else:
+        # get all clusters except D_solo
+        D_others = K_cluster_centrs[:idx] + K_cluster_centrs[idx+1:]
+    for D_oth in D_others:
+        dist = torch.cdist(D_solo, torch.from_numpy(D_oth))
+        Dist_all.append(dist)
+
+
+# prepare dataset
+with torch.no_grad():
+    dists = []
+    for x, y_idx in data_loader_train:
+        rand_number = random.randrange(0, len(K_cluster_centrs))
+        k_random = K_cluster_centrs[rand_number]
+        for cluster in K_cluster_centrs:
+            dist = cdist(cluster, k_random)
+            np.fill_diagonal(dist, np.inf)
+            dists.append(dist)
+#    How to dinf the closest clusters with regard to k_random ?
+
+
+
+# Training epoch
+
+for epoch in range(1, 10):
 
     metrics_epoch = {key: [] for key in metrics.keys()}
 
+    np_z_embs = []
+    np_y_embs = []
+    idx = 0
     for data_loader in [data_loader_train, data_loader_test]:  # just for classification example
-        stage = 'train'
+        # stage = 'train'
+
         if data_loader == data_loader_test:
+            continue
             stage = 'test'
             model = model.eval()
             torch.set_grad_enabled(False)
@@ -236,8 +274,9 @@ for epoch in range(1, 100):
             y_idx = y_idx.squeeze().to(DEVICE)
             z = model.forward(x)
             if data_loader == data_loader_train:
-                loss = loss_fn.forward(z=z,y_idx=y_idx)
+                loss, all_losses = loss_fn.forward(z=z,y_idx=y_idx)
                 metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+        print(np.mean(metrics_epoch['train_loss']))
