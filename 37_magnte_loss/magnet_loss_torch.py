@@ -244,7 +244,7 @@ with torch.no_grad():
             dist = cdist(cluster, k_random)
             np.fill_diagonal(dist, np.inf)
             dists.append(dist)
-#    How to dinf the closest clusters with regard to k_random ?
+#    How to find the closest clusters with regard to k_random ?
 
 
 
