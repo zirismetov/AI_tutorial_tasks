@@ -205,6 +205,7 @@ data_loader_train = torch.utils.data.DataLoader(
 
 model_D = ModelD().to(DEVICE)
 model_G = ModelG().to(DEVICE)
+
 def get_parameter_count(model):
     params = list(model.parameters())
     result = 0
@@ -242,7 +243,7 @@ for epoch in range(1, 500):
             param.requires_grad = False
         y_gen = model_D.forward(x_gen)
         loss_G = -torch.mean(y_gen)
-        loss_G.backword()
+        loss_G.backward()
         optimizer_G.step()
         optimizer_G.zero_grad()
 
@@ -254,7 +255,7 @@ for epoch in range(1, 500):
             y_fake = model_D.forward(x_fake.detach())
             y_real = model_D.forward(x)
             loss_D = torch.mean(y_fake) - torch.mean(y_real)
-            loss_D.backword()
+            loss_D.backward()
             torch.nn.utils.clip_grad_norm_(model_D.parameters(), max_norm=1e-2, norm_type=1)
             optimizer_D.step()
             optimizer_D.zero_grad()
