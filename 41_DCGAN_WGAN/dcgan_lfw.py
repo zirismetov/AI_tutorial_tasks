@@ -1,7 +1,7 @@
-import argparse  # pip3 install argparse
+import argparse # pip3 install argparse
 from copy import copy
 
-from tqdm import tqdm  # pip install tqdm
+from tqdm import tqdm # pip install tqdm
 import hashlib
 import os
 import pickle
@@ -16,7 +16,6 @@ import torch.distributed
 import torch.multiprocessing as mp
 
 import matplotlib.pyplot as plt
-
 plt.rcParams["figure.figsize"] = (15, 7)
 plt.style.use('dark_background')
 
@@ -39,7 +38,6 @@ args, _ = parser.parse_known_args()
 from sklearn.datasets import fetch_lfw_people
 from PIL import Image
 import PIL.ImageOps
-
 RUN_PATH = args.run_path
 BATCH_SIZE = args.batch_size
 EPOCHS = args.num_epochs
@@ -47,13 +45,13 @@ LEARNING_RATE = args.learning_rate
 Z_SIZE = args.z_size
 DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
-MAX_CLASSES = args.classes_count  # 0 = include all
+MAX_CLASSES = args.classes_count # 0 = include all
 IS_DEBUG = args.is_debug
 INPUT_SIZE = 56
 
 if not torch.cuda.is_available() or IS_DEBUG:
-    MAX_LEN = 300  # per class for debugging
-    MAX_CLASSES = 6  # reduce number of classes for debugging
+    MAX_LEN = 300 # per class for debugging
+    MAX_CLASSES = 6 # reduce number of classes for debugging
     DEVICE = 'cpu'
     BATCH_SIZE = 66
 
@@ -63,11 +61,10 @@ if len(RUN_PATH):
         shutil.rmtree(RUN_PATH)
     os.makedirs(RUN_PATH)
 
-
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__()
-        self.data = fetch_lfw_people(resize=None, funneled=True, color=False, min_faces_per_person=100)
+        self.data = fetch_lfw_people(resize=None,funneled=True, color=False, min_faces_per_person=100)
         self.n_classes = self.data.target_names.size
         self.labels = self.data.target_names.tolist()
         # self.X = ((np_x - np.mean(np_x, axis=0)) / np.std(np_x, axis=0)).astype(np.float32)
@@ -80,7 +77,7 @@ class DatasetEMNIST(torch.utils.data.Dataset):
         np_x = self.data.images[idx]
 
         # np_x = np.expand_dims(np_x, axis=0)
-        img = Image.fromarray((np_x * 255).astype(np.uint8))
+        img = Image.fromarray((np_x*255).astype(np.uint8))
         img = img.resize(size=(INPUT_SIZE, INPUT_SIZE))
         # plt.imshow(img, interpolation='nearest')
         # plt.show()
@@ -98,11 +95,11 @@ class ModelD(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.encoder = torch.nn.Sequential(
+        self.encoder =  torch.nn.Sequential(
             torch.nn.Conv2d(in_channels=1, out_channels=8, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=8),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
+            torch.nn.MaxPool2d(kernel_size=4,stride=2, padding=1),
             torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=32),
             torch.nn.LeakyReLU(),
@@ -111,11 +108,12 @@ class ModelD(torch.nn.Module):
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
             torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
-            torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))
+            torch.nn.AdaptiveMaxPool2d(output_size=(1,1))
         )
         self.mpl = torch.nn.Sequential(
 
             torch.nn.Linear(in_features=64, out_features=1),
+            torch.nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -130,11 +128,11 @@ class ModelG(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.decoder_size = INPUT_SIZE // 4
-        self.mpl = torch.nn.Linear(Z_SIZE, self.decoder_size ** 2 * 128)
+        self.mpl = torch.nn.Linear(Z_SIZE, self.decoder_size**2 * 128)
         self.decoder = torch.nn.Sequential(
             torch.nn.BatchNorm2d(num_features=128),
             torch.nn.Upsample(scale_factor=2),
-            torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+            torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3,stride=1,padding=1),
             torch.nn.BatchNorm2d(num_features=128),
             torch.nn.LeakyReLU(),
 
@@ -218,8 +216,6 @@ data_loader_train = torch.utils.data.DataLoader(
 
 model_D = ModelD().to(DEVICE)
 model_G = ModelG().to(DEVICE)
-
-
 def get_parameter_count(model):
     params = list(model.parameters())
     result = 0
@@ -227,8 +223,6 @@ def get_parameter_count(model):
         count_param = np.prod(param.size())
         result += count_param
     return result
-
-
 print(f"Model_D params :{get_parameter_count(model_D)} ")
 print(f"Model_G params :{get_parameter_count(model_G)} ")
 # exit()
@@ -257,23 +251,19 @@ for epoch in range(1, 500):
         for param in model_D.parameters():
             param.requires_grad = False
         y_gen = model_D.forward(x_gen)
-        loss_G = -torch.mean(y_gen)
-        loss_G.backward()
+        loss_G = -torch.mean(torch.log(y_gen + 1e-8))
 
-        for n in range(3):
-            z = dist_z.sample((x.size(0), Z_SIZE)).to(DEVICE)
-            x_fake = model_G.forward(z)
-            for param in model_D.parameters():
-                param.requires_grad = True
-            y_fake = model_D.forward(x_fake.detach())
-            y_real = model_D.forward(x)
-            loss_D = torch.mean(y_fake) - torch.mean(y_real)
-            loss_D.backward()
-            torch.nn.utils.clip_grad_norm_(model_D.parameters(), max_norm=1e-2, norm_type=1)
+        z = dist_z.sample((x.size(0), Z_SIZE)).to(DEVICE)
+        x_fake = model_G.forward(z)
+        for param in model_D.parameters():
+            param.requires_grad = True
+        y_fake = model_D.forward(x_fake.detach())
+        y_real = model_D.forward(x)
+        loss_D = -torch.mean(torch.log(y_real+1e-8) + torch.log(1-y_fake + 1e-8))
 
         loss = loss_D + loss_G
 
-        # loss.backward()
+        loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
@@ -292,7 +282,7 @@ for epoch in range(1, 500):
     print(f'epoch: {epoch} {" ".join(metrics_strs)}')
 
     plt.clf()
-    plt.subplot(121)  # row col idx
+    plt.subplot(121) # row col idx
     plts = []
     c = 0
     for key, value in metrics.items():
