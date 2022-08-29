@@ -1,6 +1,7 @@
 import argparse  # pip3 install argparse
 from copy import copy
 
+from torch.utils.data import WeightedRandomSampler
 from tqdm import tqdm  # pip install tqdm
 import hashlib
 import os
@@ -67,7 +68,7 @@ if len(RUN_PATH):
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__()
-        self.data = fetch_lfw_people(resize=None, funneled=True, color=False, min_faces_per_person=100)
+        self.data = fetch_lfw_people(resize=None, funneled=True, color=False, min_faces_per_person=50)
         self.n_classes = self.data.target_names.size
         self.labels = self.data.target_names.tolist()
         # self.X = ((np_x - np.mean(np_x, axis=0)) / np.std(np_x, axis=0)).astype(np.float32)
@@ -159,7 +160,7 @@ class ModelG(torch.nn.Module):
             torch.nn.BatchNorm2d(num_features=8),
             torch.nn.Conv2d(in_channels=8, out_channels=1, kernel_size=3, stride=1, padding=1),
 
-            torch.nn.Sigmoid()
+            torch.nn.Tanh()
 
         )
 
@@ -208,12 +209,18 @@ else:
     #     pickle.dump(idx_train, fp)
 
 dataset_train = torch.utils.data.Subset(dataset_full, idx_train)
+counts = np.bincount(dataset_train.dataset.data.target[dataset_train.indices])
+labels_weights = 1. / counts
+weights = labels_weights[dataset_train.dataset.data.target[dataset_train.indices]]
+sampler = WeightedRandomSampler(weights, len(weights))
+
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=True,
+    # shuffle=True,
     drop_last=(len(dataset_train) % BATCH_SIZE < 12),
-    num_workers=(8 if not IS_DEBUG else 0)
+    num_workers=(8 if not IS_DEBUG else 0),
+    sampler=sampler
 )
 
 model_D = ModelD().to(DEVICE)
@@ -245,11 +252,44 @@ dist_z = torch.distributions.Normal(
     scale=1.0
 )
 
+
+def calculate_gradient_penalty(model_D,real_images, fake_images, p_lambda = 10):
+    batch_size = real_images.size(0)
+    eta = torch.FloatTensor(batch_size, 1).uniform_(0, 1)
+    eta = eta.expand(batch_size, real_images.size(1))
+    if torch.cuda.is_available():
+        eta = eta.cuda()
+    else:
+        eta = eta
+
+    interpolated = eta * real_images + ((1 - eta) * fake_images)
+
+    if torch.cuda.is_available():
+        interpolated = interpolated.cuda()
+    else:
+        interpolated = interpolated
+
+    # define it to calculate gradient
+    interpolated = torch.autograd.Variable(interpolated, requires_grad=True)
+
+    # calculate probability of interpolated examples
+    prob_interpolated = model_D.forward(interpolated)
+
+    # calculate gradients of probabilities with respect to examples
+    gradients = torch.autograd.grad(outputs=prob_interpolated, inputs=interpolated,
+                              grad_outputs=torch.ones(
+                                  prob_interpolated.size()).cuda() if  torch.cuda.is_available() else torch.ones(
+                                  prob_interpolated.size()),
+                              create_graph=True, retain_graph=True)[0]
+
+    grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * p_lambda
+    return grad_penalty
+
 for epoch in range(1, 500):
     metrics_epoch = {key: [] for key in metrics.keys()}
 
     stage = 'train'
-    for x, x_idx in tqdm(data_loader_train, desc=stage):
+    for x, x_idx in data_loader_train:
         x = x.to(DEVICE)
 
         z = dist_z.sample((x.size(0), Z_SIZE)).to(DEVICE)
@@ -259,6 +299,7 @@ for epoch in range(1, 500):
         y_gen = model_D.forward(x_gen)
         loss_G = -torch.mean(y_gen)
         loss_G.backward()
+        torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1e-2, norm_type=1)
 
         for n in range(3):
             z = dist_z.sample((x.size(0), Z_SIZE)).to(DEVICE)
@@ -267,7 +308,9 @@ for epoch in range(1, 500):
                 param.requires_grad = True
             y_fake = model_D.forward(x_fake.detach())
             y_real = model_D.forward(x)
-            loss_D = torch.mean(y_fake) - torch.mean(y_real)
+            gradient_penalty = calculate_gradient_penalty(model_D,y_real.data, y_fake.data)
+            gradient_penalty.backward()
+            loss_D = torch.mean(y_fake) - torch.mean(y_real) + gradient_penalty
             loss_D.backward()
             torch.nn.utils.clip_grad_norm_(model_D.parameters(), max_norm=1e-2, norm_type=1)
 
@@ -290,31 +333,28 @@ for epoch in range(1, 500):
         metrics_strs.append(f'{key}: {round(value, 2)}')
 
     print(f'epoch: {epoch} {" ".join(metrics_strs)}')
-
-    plt.clf()
-    plt.subplot(121)  # row col idx
-    plts = []
-    c = 0
-    for key, value in metrics.items():
-        plts += plt.plot(value, f'C{c}', label=key)
-        ax = plt.twinx()
-        c += 1
-    plt.legend(plts, [it.get_label() for it in plts])
-
-    plt.subplot(122)  # row col idx
-    grid_img = torchvision.utils.make_grid(
-        x_fake.detach().cpu(),
-        padding=10,
-        scale_each=True,
-        nrow=8
-    )
-    plt.imshow(grid_img.permute(1, 2, 0))
-
-    plt.tight_layout(pad=0.5)
-
-    if len(RUN_PATH) == 0:
-        plt.show()
-    else:
-        if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'train_loss'][-1]):
-            exit()
-        plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
+    if epoch % 10 == 0:
+        plt.clf()
+        plt.subplot(121)  # row col idx
+        plts = []
+        c = 0
+        for key, value in metrics.items():
+            plts += plt.plot(value, f'C{c}', label=key)
+            ax = plt.twinx()
+            c += 1
+        plt.legend(plts, [it.get_label() for it in plts])
+        plt.subplot(122)  # row col idx
+        grid_img = torchvision.utils.make_grid(
+            x_fake.detach().cpu(),
+            padding=10,
+            scale_each=True,
+            nrow=8
+        )
+        plt.imshow(grid_img.permute(1, 2, 0))
+        plt.tight_layout(pad=0.5)
+        if len(RUN_PATH) == 0:
+            plt.show()
+        else:
+            if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'train_loss'][-1]):
+                exit()
+            plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')

@@ -1,6 +1,7 @@
 import argparse # pip3 install argparse
 from copy import copy
 
+from torch.utils.data import WeightedRandomSampler
 from tqdm import tqdm # pip install tqdm
 import hashlib
 import os
@@ -64,7 +65,7 @@ if len(RUN_PATH):
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__()
-        self.data = fetch_lfw_people(resize=None,funneled=True, color=False, min_faces_per_person=100)
+        self.data = fetch_lfw_people(resize=None,funneled=True, color=False, min_faces_per_person=50)
         self.n_classes = self.data.target_names.size
         self.labels = self.data.target_names.tolist()
         # self.X = ((np_x - np.mean(np_x, axis=0)) / np.std(np_x, axis=0)).astype(np.float32)
@@ -206,12 +207,18 @@ else:
     #     pickle.dump(idx_train, fp)
 
 dataset_train = torch.utils.data.Subset(dataset_full, idx_train)
+counts = np.bincount(dataset_train.dataset.data.target[dataset_train.indices])
+labels_weights = 1. / counts
+weights = labels_weights[dataset_train.dataset.data.target[dataset_train.indices]]
+sampler = WeightedRandomSampler(weights, len(weights))
+
 data_loader_train = torch.utils.data.DataLoader(
     dataset=dataset_train,
     batch_size=BATCH_SIZE,
-    shuffle=True,
+    # shuffle=True,
     drop_last=(len(dataset_train) % BATCH_SIZE < 12),
-    num_workers=(8 if not IS_DEBUG else 0)
+    num_workers=(8 if not IS_DEBUG else 0),
+    sampler=sampler
 )
 
 model_D = ModelD().to(DEVICE)
@@ -280,31 +287,31 @@ for epoch in range(1, 500):
         metrics_strs.append(f'{key}: {round(value, 2)}')
 
     print(f'epoch: {epoch} {" ".join(metrics_strs)}')
+    if epoch % 10 == 0:
+        plt.clf()
+        plt.subplot(121) # row col idx
+        plts = []
+        c = 0
+        for key, value in metrics.items():
+            plts += plt.plot(value, f'C{c}', label=key)
+            ax = plt.twinx()
+            c += 1
+        plt.legend(plts, [it.get_label() for it in plts])
 
-    plt.clf()
-    plt.subplot(121) # row col idx
-    plts = []
-    c = 0
-    for key, value in metrics.items():
-        plts += plt.plot(value, f'C{c}', label=key)
-        ax = plt.twinx()
-        c += 1
-    plt.legend(plts, [it.get_label() for it in plts])
+        plt.subplot(122)  # row col idx
+        grid_img = torchvision.utils.make_grid(
+            x_fake.detach().cpu(),
+            padding=10,
+            scale_each=True,
+            nrow=8
+        )
+        plt.imshow(grid_img.permute(1, 2, 0))
 
-    plt.subplot(122)  # row col idx
-    grid_img = torchvision.utils.make_grid(
-        x_fake.detach().cpu(),
-        padding=10,
-        scale_each=True,
-        nrow=8
-    )
-    plt.imshow(grid_img.permute(1, 2, 0))
+        plt.tight_layout(pad=0.5)
 
-    plt.tight_layout(pad=0.5)
-
-    if len(RUN_PATH) == 0:
-        plt.show()
-    else:
-        if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'train_loss'][-1]):
-            exit()
-        plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
+        if len(RUN_PATH) == 0:
+            plt.show()
+        else:
+            if np.isnan(metrics[f'train_loss'][-1]) or np.isinf(metrics[f'train_loss'][-1]):
+                exit()
+            plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
