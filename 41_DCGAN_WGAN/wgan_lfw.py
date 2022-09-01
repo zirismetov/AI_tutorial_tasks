@@ -253,7 +253,7 @@ dist_z = torch.distributions.Normal(
 )
 
 
-def calculate_gradient_penalty(model_D,real_images, fake_images, p_lambda = 10):
+def calculate_gradient_penalty(model_D, real_images, fake_images, p_lambda=10):
     batch_size = real_images.size(0)
     eta = torch.FloatTensor(batch_size, 1).uniform_(0, 1)
     eta = eta.expand(batch_size, real_images.size(1))
@@ -277,13 +277,37 @@ def calculate_gradient_penalty(model_D,real_images, fake_images, p_lambda = 10):
 
     # calculate gradients of probabilities with respect to examples
     gradients = torch.autograd.grad(outputs=prob_interpolated, inputs=interpolated,
-                              grad_outputs=torch.ones(
-                                  prob_interpolated.size()).cuda() if  torch.cuda.is_available() else torch.ones(
-                                  prob_interpolated.size()),
-                              create_graph=True, retain_graph=True)[0]
+                                    grad_outputs=torch.ones(
+                                        prob_interpolated.size()).cuda() if torch.cuda.is_available() else torch.ones(
+                                        prob_interpolated.size()),
+                                    create_graph=True, retain_graph=True)[0]
 
     grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * p_lambda
     return grad_penalty
+
+
+def calculate_gradient_penalty(model_D, real_images, fake_images, penalty_lambda=10):
+    eta = torch.FloatTensor(BATCH_SIZE, 1, 1, 1).uniform_(0, 1)
+    eta = eta.expand(BATCH_SIZE, real_images.size(1), real_images.size(2), real_images.size(3))
+
+    interpolated = eta * real_images + ((1 - eta) * fake_images)
+
+    # define it to calculate gradient
+    interpolated = torch.autograd.Variable(interpolated, requires_grad=True)
+
+    # calculate probability of interpolated examples
+    prob_interpolated = model_D.forward(interpolated)
+
+    # calculate gradients of probabilities with respect to examples
+    gradients = torch.autograd.grad(outputs=prob_interpolated, inputs=interpolated,
+                                    grad_outputs=torch.ones(
+                                        prob_interpolated.size()).cuda() if torch.cuda.is_available() else torch.ones(
+                                        prob_interpolated.size()),
+                                    create_graph=True, retain_graph=True)[0]
+
+    grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * penalty_lambda
+    return grad_penalty
+
 
 for epoch in range(1, 500):
     metrics_epoch = {key: [] for key in metrics.keys()}
@@ -308,7 +332,7 @@ for epoch in range(1, 500):
                 param.requires_grad = True
             y_fake = model_D.forward(x_fake.detach())
             y_real = model_D.forward(x)
-            gradient_penalty = calculate_gradient_penalty(model_D,y_real.data, y_fake.data)
+            gradient_penalty = calculate_gradient_penalty(model_D, y_real.data, y_fake.data)
             gradient_penalty.backward()
             loss_D = torch.mean(y_fake) - torch.mean(y_real) + gradient_penalty
             loss_D.backward()
