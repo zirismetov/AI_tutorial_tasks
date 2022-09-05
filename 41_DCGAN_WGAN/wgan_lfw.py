@@ -44,7 +44,7 @@ import PIL.ImageOps
 RUN_PATH = args.run_path
 BATCH_SIZE = args.batch_size
 EPOCHS = args.num_epochs
-LEARNING_RATE = args.learning_rate
+LEARNING_RATE = 1e-4
 Z_SIZE = args.z_size
 DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
@@ -68,7 +68,7 @@ if len(RUN_PATH):
 class DatasetEMNIST(torch.utils.data.Dataset):
     def __init__(self):
         super().__init__()
-        self.data = fetch_lfw_people(resize=None, funneled=True, color=False, min_faces_per_person=50)
+        self.data = fetch_lfw_people(resize=None, funneled=True, color=False, min_faces_per_person=100)
         self.n_classes = self.data.target_names.size
         self.labels = self.data.target_names.tolist()
         # self.X = ((np_x - np.mean(np_x, axis=0)) / np.std(np_x, axis=0)).astype(np.float32)
@@ -101,15 +101,15 @@ class ModelD(torch.nn.Module):
 
         self.encoder = torch.nn.Sequential(
             torch.nn.Conv2d(in_channels=1, out_channels=8, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=8),
+            torch.nn.InstanceNorm2d(num_features=8, affine=True),
             torch.nn.LeakyReLU(),
             torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
             torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=32),
+            torch.nn.InstanceNorm2d(num_features=32, affine=True),
             torch.nn.LeakyReLU(),
             torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
             torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=64),
+            torch.nn.InstanceNorm2d(num_features=64, affine=True),
             torch.nn.LeakyReLU(),
             torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
             torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))
@@ -219,7 +219,7 @@ data_loader_train = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     # shuffle=True,
     drop_last=(len(dataset_train) % BATCH_SIZE < 12),
-    num_workers=(8 if not IS_DEBUG else 0),
+    num_workers=0,
     sampler=sampler
 )
 
@@ -240,7 +240,8 @@ print(f"Model_D params :{get_parameter_count(model_D)} ")
 print(f"Model_G params :{get_parameter_count(model_G)} ")
 # exit()
 
-optimizer = torch.optim.Adam(list(model_D.parameters()) + list(model_G.parameters()), lr=LEARNING_RATE)
+optimizer_G = torch.optim.Adam(model_G.parameters(), lr=LEARNING_RATE, betas=(0.0,0.9))
+optimizer_D = torch.optim.Adam(model_D.parameters(), lr=LEARNING_RATE, betas=(0.0,0.9))
 
 metrics = {}
 for stage in ['train']:
@@ -253,42 +254,9 @@ dist_z = torch.distributions.Normal(
 )
 
 
-def calculate_gradient_penalty(model_D, real_images, fake_images, p_lambda=10):
-    batch_size = real_images.size(0)
-    eta = torch.FloatTensor(batch_size, 1).uniform_(0, 1)
-    eta = eta.expand(batch_size, real_images.size(1))
-    if torch.cuda.is_available():
-        eta = eta.cuda()
-    else:
-        eta = eta
-
-    interpolated = eta * real_images + ((1 - eta) * fake_images)
-
-    if torch.cuda.is_available():
-        interpolated = interpolated.cuda()
-    else:
-        interpolated = interpolated
-
-    # define it to calculate gradient
-    interpolated = torch.autograd.Variable(interpolated, requires_grad=True)
-
-    # calculate probability of interpolated examples
-    prob_interpolated = model_D.forward(interpolated)
-
-    # calculate gradients of probabilities with respect to examples
-    gradients = torch.autograd.grad(outputs=prob_interpolated, inputs=interpolated,
-                                    grad_outputs=torch.ones(
-                                        prob_interpolated.size()).cuda() if torch.cuda.is_available() else torch.ones(
-                                        prob_interpolated.size()),
-                                    create_graph=True, retain_graph=True)[0]
-
-    grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * p_lambda
-    return grad_penalty
-
-
-def calculate_gradient_penalty(model_D, real_images, fake_images, penalty_lambda=10):
-    eta = torch.FloatTensor(BATCH_SIZE, 1, 1, 1).uniform_(0, 1)
-    eta = eta.expand(BATCH_SIZE, real_images.size(1), real_images.size(2), real_images.size(3))
+def calculate_gradient_penalty(model_D, real_images, fake_images, device='cpu'):
+    eta = torch.FloatTensor(real_images.size(0), 1, 1, 1).uniform_(0, 1)
+    eta = eta.expand(real_images.size(0), real_images.size(1), real_images.size(2), real_images.size(3)).to(DEVICE)
 
     interpolated = eta * real_images + ((1 - eta) * fake_images)
 
@@ -299,16 +267,15 @@ def calculate_gradient_penalty(model_D, real_images, fake_images, penalty_lambda
     prob_interpolated = model_D.forward(interpolated)
 
     # calculate gradients of probabilities with respect to examples
-    gradients = torch.autograd.grad(outputs=prob_interpolated, inputs=interpolated,
-                                    grad_outputs=torch.ones(
-                                        prob_interpolated.size()).cuda() if torch.cuda.is_available() else torch.ones(
-                                        prob_interpolated.size()),
+    gradients = torch.autograd.grad(inputs=interpolated,
+                                    outputs=prob_interpolated,
+                                    grad_outputs=torch.ones_like(prob_interpolated),
                                     create_graph=True, retain_graph=True)[0]
 
-    grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * penalty_lambda
+    grad_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return grad_penalty
 
-
+lambda_gp = 10
 for epoch in range(1, 500):
     metrics_epoch = {key: [] for key in metrics.keys()}
 
@@ -323,26 +290,22 @@ for epoch in range(1, 500):
         y_gen = model_D.forward(x_gen)
         loss_G = -torch.mean(y_gen)
         loss_G.backward()
-        torch.nn.utils.clip_grad_norm_(model_G.parameters(), max_norm=1e-2, norm_type=1)
-
-        for n in range(3):
+        optimizer_G.step()
+        optimizer_G.zero_grad()
+        for n in range(5):
             z = dist_z.sample((x.size(0), Z_SIZE)).to(DEVICE)
             x_fake = model_G.forward(z)
             for param in model_D.parameters():
                 param.requires_grad = True
             y_fake = model_D.forward(x_fake.detach())
             y_real = model_D.forward(x)
-            gradient_penalty = calculate_gradient_penalty(model_D, y_real.data, y_fake.data)
-            gradient_penalty.backward()
-            loss_D = torch.mean(y_fake) - torch.mean(y_real) + gradient_penalty
+            gradient_penalty = calculate_gradient_penalty(model_D, x, x_fake, DEVICE)
+            loss_D = -(torch.mean(y_real) - torch.mean(y_fake)) + lambda_gp*gradient_penalty
             loss_D.backward()
-            torch.nn.utils.clip_grad_norm_(model_D.parameters(), max_norm=1e-2, norm_type=1)
+            optimizer_D.step()
+            optimizer_D.zero_grad()
 
         loss = loss_D + loss_G
-
-        # loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
 
         metrics_epoch[f'{stage}_loss'].append(loss.cpu().item())
         metrics_epoch[f'{stage}_loss_g'].append(loss_G.cpu().item())
