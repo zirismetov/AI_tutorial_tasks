@@ -254,7 +254,7 @@ dist_z = torch.distributions.Normal(
 )
 
 
-def calculate_gradient_penalty(model_D, real_images, fake_images, device='cpu'):
+def calculate_gradient_penalty(model_D, real_images, fake_images):
     eta = torch.FloatTensor(real_images.size(0), 1, 1, 1).uniform_(0, 1)
     eta = eta.expand(real_images.size(0), real_images.size(1), real_images.size(2), real_images.size(3)).to(DEVICE)
 
