@@ -41,7 +41,7 @@ parser.add_argument('-z_size', default=128, type=int)
 
 parser.add_argument('-discriminator_n', default=1, type=int)
 
-parser.add_argument('-coef_alpha', default=50, type=float)
+parser.add_argument('-coef_alpha', default=150, type=float)
 parser.add_argument('-coef_beta', default=50, type=float)
 parser.add_argument('-data_path', default="../data/horse-zebra", type=str)
 parser.add_argument('-is_debug', default=True, type=lambda x: (str(x).lower() == 'true'))
@@ -57,7 +57,7 @@ DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
 CHARS_INCLUDE = args.chars_include # '' = include all
 IS_DEBUG = args.is_debug
-INPUT_SIZE = 28
+INPUT_SIZE = 56
 
 COEF_ALPHA = args.coef_alpha
 COEF_BETA = args.coef_beta
@@ -82,9 +82,9 @@ class DatasetHorse(torch.utils.data.Dataset):
         self.root_horse = root_horse
         self.transform = A.Compose(
             [
-                A.Resize(width=28, height=28),
+                A.Resize(width=INPUT_SIZE, height=INPUT_SIZE),
                 A.HorizontalFlip(p=0.5),
-                A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], max_pixel_value=255),
+                A.Normalize(),
                 ToTensorV2(),
             ],
             # additional_targets={"image0": "image"},
@@ -115,26 +115,14 @@ class DatasetZebra(torch.utils.data.Dataset):
         self.root_zebra = root_zebra
         self.transform = A.Compose(
             [
-                A.Resize(width=28, height=28),
+                A.Resize(width=INPUT_SIZE, height=INPUT_SIZE),
                 A.HorizontalFlip(p=0.5),
                 A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], max_pixel_value=255),
                 ToTensorV2(),
             ],
-            # additional_targets={"image0": "image"},
         )
         self.zebra_images = os.listdir(root_zebra)
         self.zebra_len = len(self.zebra_images)
-
-        # if not os.path.exists(path_dataset):
-        #     os.makedirs('../data', exist_ok=True)
-        #     download_url_to_file(
-        #         'http://share.yellowrobot.xyz/1636095494-dml-course-2021-q4/ariel_dataset.pkl',
-        #         path_dataset,
-        #         progress=True
-        #     )
-        # with open(path_dataset, 'rb') as fp:
-        #     self.X, self.Y, self.labels = pickle.load(fp)
-        # self.labels = list(self.labels)
 
     def __len__(self):
         if IS_DEBUG:
@@ -149,39 +137,6 @@ class DatasetZebra(torch.utils.data.Dataset):
             augmentations = self.transform(image=zebra_img)
             zebra_img = augmentations["image"]
         return zebra_img
-        # x = np.expand_dims(np.transpose(self.X[idx]), axis=0).astype(np.float32)
-        # y = self.Y[idx]
-        # return x, y
-
-
-# def filter_dataset(dataset, name):
-#     str_args_for_hasing = [str(it) for it in [MAX_LEN, CHARS_INCLUDE] + dataset.labels]
-#     hash_args = hashlib.md5((''.join(str_args_for_hasing)).encode()).hexdigest()
-#     path_cache = f'../data/{hash_args}_dtngan_{name}.pkl'
-#     if os.path.exists(path_cache):
-#         print('loading from cache')
-#         with open(path_cache, 'rb') as fp:
-#             idxes_include = pickle.load(fp)
-#     else:
-#         idxes_include = []
-#         char_counter = {}
-#         for char in CHARS_INCLUDE:
-#             char_counter[char] = 0
-#         idx = 0
-#         for x, y in tqdm(dataset, f'filter_dataset {name}'):
-#             char = dataset.labels[int(y)]
-#             if char in CHARS_INCLUDE:
-#                 char_counter[char] +=1
-#                 if char_counter[char] < MAX_LEN:
-#                     idxes_include.append(idx)
-#             if all(it >= MAX_LEN for it in char_counter.values()):
-#                 break
-#             idx += 1
-#         with open(path_cache, 'wb') as fp:
-#             pickle.dump(idxes_include, fp)
-#
-#     dataset_filtered = torch.utils.data.Subset(dataset, idxes_include)
-#     return dataset_filtered
 
 dataset_source = DatasetHorse(args.data_path+"/horses")
 dataset_target = DatasetZebra(args.data_path+"/zebras")
@@ -318,7 +273,7 @@ class ModelG(torch.nn.Module):
 
     def forward(self, z):
         z_flat = self.mlp.forward(z)
-        z_2d = z_flat.view(z.size(0), 128, self.decoder_size, self.decoder_size)
+        z_2d = z_flat.view(z.size(0), Z_SIZE, self.decoder_size, self.decoder_size)
         y_prim = self.decoder.forward(z_2d)
         return y_prim
 
