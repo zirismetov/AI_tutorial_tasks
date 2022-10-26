@@ -37,7 +37,7 @@ parser.add_argument('-learning_rate', default=1e-4, type=float)
 from torch.autograd import Variable
 parser.add_argument('-z_size', default=32, type=int)
 parser.add_argument('-margin', default=0.2, type=float)
-parser.add_argument('-K', default=5, type=int)
+parser.add_argument('-K', default=8, type=int)
 parser.add_argument('-M', default=8, type=int)
 parser.add_argument('-D', default=8, type=int)
 
@@ -203,7 +203,7 @@ for stage in ['train', 'test']:
 
 # collect cdist
 model = model.eval()
-list_of_embs = []
+list_of_embs_labels = []
 K_cluster_centrs = []
 Dist_all = []
 init = True
@@ -213,41 +213,52 @@ with torch.no_grad():
         x = x.to(DEVICE)
         y_idx = y_idx.squeeze().to(DEVICE)
         z = model.forward(x)
-        list_of_embs.append({'emb': z.detach(), 'label':y_idx})
-        if init:
-            k_means = KMeans(n_clusters=args.K).fit(z.detach(), y_idx)
-            init = False
-        else:
-            k_means = KMeans(n_clusters=args.K, init=k_means.cluster_centers_).fit(z.detach(), y_idx)
-        K_cluster_centrs.append(k_means.cluster_centers_)
-
-for idx in range(len(K_cluster_centrs)):
-    D_solo = torch.from_numpy(K_cluster_centrs[idx])
-    if idx == len(K_cluster_centrs):
-        # if last cluster
-        D_others = K_cluster_centrs[:idx]
-    else:
-        # get all clusters except D_solo
-        D_others = K_cluster_centrs[:idx] + K_cluster_centrs[idx+1:]
-    for D_oth in D_others:
-        dist = torch.cdist(D_solo, torch.from_numpy(D_oth))
-        Dist_all.append(dist)
+        list_of_embs_labels.append({'emb': z.detach(), 'label':y_idx})
+        # if init:
+        #     k_means = KMeans(n_clusters=args.K).fit(z.detach(), y_idx)
+        #     init = False
+        # else:
+        #     k_means = KMeans(n_clusters=args.K, init=k_means.cluster_centers_).fit(z.detach(), y_idx)
+        # K_cluster_centrs.append(k_means.cluster_centers_)
+init = True
+list_of_embs = []
+for emb in list_of_embs_labels:
+    embs = emb['emb']
+    list_of_embs.append(embs.numpy())
+concatted_embs = np.empty((0, 32))
+for emb in list_of_embs:
+    concatted_embs = np.vstack((concatted_embs, emb))
+k_means = KMeans(n_clusters=args.K).fit(concatted_embs).cluster_centers_
+D_all = torch.pdist(torch.from_numpy(k_means))
+# for idx in range(len(k_means)):
+#     D_solo = torch.from_numpy(k_means[idx])
+#     if idx == len(k_means):
+#         # if last cluster
+#         D_others = k_means[:idx]
+#     else:
+#         # get all clusters except D_solo
+#         D_others = k_means[:idx] + k_means[idx+1:]
+#     for D_oth in D_others:
+#         dist = torch.cdist(D_solo, torch.from_numpy(D_oth))
+#         Dist_all.append(dist)
 
 
 # prepare dataset
+used_samples = []
+unused_samples = []
 with torch.no_grad():
     dists = []
     for x, y_idx in data_loader_train:
-        rand_number = random.randrange(0, len(K_cluster_centrs))
-        k_random = K_cluster_centrs[rand_number]
-        for cluster in K_cluster_centrs:
+        rand_number = random.randrange(0, len(D_all))
+        initial_cluster = D_all[rand_number]
+        z = model.forward(x)
+        k_means = KMeans(n_clusters=args.K).fit_predict(z)
+        dist = torch.pairwise_distance(k_means, z)
+        for cluster in D_all:
             dist = cdist(cluster, k_random)
             np.fill_diagonal(dist, np.inf)
             dists.append(dist)
 #    How to find the closest clusters with regard to k_random ?
-
-
-
 # Training epoch
 
 for epoch in range(1, 10):

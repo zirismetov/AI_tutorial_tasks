@@ -1,8 +1,8 @@
-import argparse # pip3 install argparse
+import argparse  # pip3 install argparse
 from copy import copy
 import os
 from torch.hub import download_url_to_file
-from tqdm import tqdm # pip install tqdm
+from tqdm import tqdm  # pip install tqdm
 import hashlib
 import os
 import pickle
@@ -15,10 +15,11 @@ import torchvision
 import random
 import torch.distributed
 import torch.multiprocessing as mp
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
+# import albumentations as A
+# from albumentations.pytorch import ToTensorV2
 import matplotlib.pyplot as plt
 from PIL import Image
+
 plt.rcParams["figure.figsize"] = (15, 7)
 plt.style.use('dark_background')
 
@@ -36,13 +37,12 @@ parser.add_argument('-samples_per_class', default=1000, type=int)
 parser.add_argument('-learning_rate_g', default=3e-4, type=float)
 parser.add_argument('-learning_rate_d', default=1e-4, type=float)
 
-
 parser.add_argument('-z_size', default=128, type=int)
 
 parser.add_argument('-discriminator_n', default=1, type=int)
 
-parser.add_argument('-coef_alpha', default=150, type=float)
-parser.add_argument('-coef_beta', default=50, type=float)
+parser.add_argument('-coef_alpha', default=10, type=float)
+parser.add_argument('-coef_beta', default=10, type=float)
 parser.add_argument('-data_path', default="../data/horse-zebra", type=str)
 parser.add_argument('-is_debug', default=True, type=lambda x: (str(x).lower() == 'true'))
 
@@ -55,9 +55,9 @@ EPOCHS = args.num_epochs
 Z_SIZE = args.z_size
 DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
-CHARS_INCLUDE = args.chars_include # '' = include all
+CHARS_INCLUDE = args.chars_include  # '' = include all
 IS_DEBUG = args.is_debug
-INPUT_SIZE = 56
+INPUT_SIZE = 256
 
 COEF_ALPHA = args.coef_alpha
 COEF_BETA = args.coef_beta
@@ -66,7 +66,7 @@ DISCRIMINATOR_N = args.discriminator_n
 
 if not torch.cuda.is_available() or IS_DEBUG:
     IS_DEBUG = True
-    MAX_LEN = 300 # per class for debugging
+    MAX_LEN = 300  # per class for debugging
     DEVICE = 'cpu'
     BATCH_SIZE = 66
 
@@ -76,21 +76,16 @@ if len(RUN_PATH):
         shutil.rmtree(RUN_PATH)
     os.makedirs(RUN_PATH)
 
+
 class DatasetHorse(torch.utils.data.Dataset):
-    def __init__(self, root_horse):
+    def __init__(self, path_root_horse):
         super().__init__()
-        self.root_horse = root_horse
-        self.transform = A.Compose(
-            [
-                A.Resize(width=INPUT_SIZE, height=INPUT_SIZE),
-                A.HorizontalFlip(p=0.5),
-                A.Normalize(),
-                ToTensorV2(),
-            ],
-            # additional_targets={"image0": "image"},
-        )
-        self.horse_images = os.listdir(root_horse)
-        self.horse_len = len(self.horse_images)
+        path_dataset = '../data/horse.pkl'
+        self.transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor()
+        ])
+        self.horse_images = torchvision.datasets.ImageFolder(path_root_horse, transform=self.transform)
+        print('Horse')
 
     def __len__(self):
         if IS_DEBUG:
@@ -98,31 +93,17 @@ class DatasetHorse(torch.utils.data.Dataset):
         return len(self.horse_images)
 
     def __getitem__(self, index):
-        # list tuple np.array torch.FloatTensor
-        horse_img = self.horse_images[index % self.horse_len]
-        horse_path = os.path.join(self.root_horse, horse_img)
-        horse_img = np.array(Image.open(horse_path).convert("RGB"))
-        if self.transform:
-            augmentations = self.transform(image=horse_img)
-            horse_img = augmentations["image"]
-        return horse_img
+        return self.horse_images[index][0]
 
 
 class DatasetZebra(torch.utils.data.Dataset):
-    def __init__(self, root_zebra):
+    def __init__(self, path_root_zebra):
         super().__init__()
         path_dataset = '../data/zebra.pkl'
-        self.root_zebra = root_zebra
-        self.transform = A.Compose(
-            [
-                A.Resize(width=INPUT_SIZE, height=INPUT_SIZE),
-                A.HorizontalFlip(p=0.5),
-                A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], max_pixel_value=255),
-                ToTensorV2(),
-            ],
-        )
-        self.zebra_images = os.listdir(root_zebra)
-        self.zebra_len = len(self.zebra_images)
+        self.transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor()
+        ])
+        self.zebra_images = torchvision.datasets.ImageFolder(path_root_zebra, transform=self.transform)
 
     def __len__(self):
         if IS_DEBUG:
@@ -130,37 +111,32 @@ class DatasetZebra(torch.utils.data.Dataset):
         return len(self.zebra_images)
 
     def __getitem__(self, index):
-        zebra_img = self.zebra_images[index % self.zebra_len]
-        zebra_path = os.path.join(self.root_zebra, zebra_img)
-        zebra_img = np.array(Image.open(zebra_path).convert("RGB"))
-        if self.transform:
-            augmentations = self.transform(image=zebra_img)
-            zebra_img = augmentations["image"]
-        return zebra_img
+        return self.zebra_images[index][0]
 
-dataset_source = DatasetHorse(args.data_path+"/horses")
-dataset_target = DatasetZebra(args.data_path+"/zebras")
 
-print(f'dataset_source: {len(dataset_source)} dataset_target: {len(dataset_target)}')
+dataset_source_horse = DatasetHorse(args.data_path+'/horses_dataset')
+dataset_target_zebra = DatasetZebra(args.data_path+'/zebras_dataset')
+
+print(f'dataset_source_horse: {len(dataset_source_horse)} dataset_target_zebra: {len(dataset_target_zebra)}')
 
 data_loader_source = torch.utils.data.DataLoader(
-    dataset=dataset_source,
+    dataset=dataset_source_horse,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    pin_memory=True,
-    drop_last=(len(dataset_source) % BATCH_SIZE < 12),
-    num_workers=(8 if not IS_DEBUG else 0)
+    drop_last=(len(dataset_source_horse) % BATCH_SIZE < 12),
+    # num_workers=(8 if not IS_DEBUG else 0)
 )
 
 data_loader_target = torch.utils.data.DataLoader(
-    dataset=dataset_target,
+    dataset=dataset_target_zebra,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    drop_last=(len(dataset_target) % BATCH_SIZE < 12),
-    num_workers=(8 if not IS_DEBUG else 0)
+    drop_last=(len(dataset_target_zebra) % BATCH_SIZE < 12),
+    # num_workers=(8 if not IS_DEBUG else 0)
 )
 
-class ModelE(torch.nn.Module):
+
+class ModelE(torch.nn.Module): # Encoder
     def __init__(self):
         super().__init__()
 
@@ -168,36 +144,46 @@ class ModelE(torch.nn.Module):
             torch.nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=8),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 4, 14, 14
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 4, 14, 14
 
             torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=32),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 32, 7, 7
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 32, 7, 7
+
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=32),
+            torch.nn.LeakyReLU(),
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
+
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=32),
+            torch.nn.LeakyReLU(),
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
 
             torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 64, 4,4
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 64, 4,4
 
             torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
-            torch.nn.AdaptiveMaxPool2d(output_size=(1,1)) # B, 64, 1, 1
+            torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))  # B, 64, 1, 1
         )
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(in_features=64, out_features=Z_SIZE),
-            torch.nn.Tanh()
+            torch.nn.Sigmoid()
         )
 
     def forward(self, x):
         x_enc = self.encoder.forward(x)
-        x_enc_flat = x_enc.squeeze() # B, 64, 1, 1, => B, 64
+        x_enc_flat = x_enc.squeeze()  # B, 64, 1, 1, => B, 64
         y_prim = self.mlp.forward(x_enc_flat)
         return y_prim
 
 
-class ModelD(torch.nn.Module): #Discriminator
+class ModelD(torch.nn.Module):  # Discriminator
     def __init__(self):
         super().__init__()
 
@@ -205,31 +191,32 @@ class ModelD(torch.nn.Module): #Discriminator
             torch.nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=8),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 4, 14, 14
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 4, 14, 14
 
             torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=32),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 32, 7, 7
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 32, 7, 7
 
             torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 64, 4,4
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 64, 4,4
+
             torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
-            torch.nn.AdaptiveMaxPool2d(output_size=(1,1)) # B, 64, 1, 1
+            torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))  # B, 64, 1, 1
         )
         self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(in_features=64, out_features=3), # 0 - fake_source, 1 -fake_target, 2-real_target
+            torch.nn.Linear(in_features=64, out_features=3),  # 0 - fake_source, 1 -fake_target, 2-real_target
             torch.nn.Softmax(dim=-1)
 
         )
 
     def forward(self, x):
         x_enc = self.encoder.forward(x)
-        x_enc_flat = x_enc.squeeze() # B, 64, 1, 1, => B, 64
+        x_enc_flat = x_enc.squeeze()  # B, 64, 1, 1, => B, 64
         y_prim = self.mlp.forward(x_enc_flat)
         return y_prim
 
@@ -237,7 +224,7 @@ class ModelD(torch.nn.Module): #Discriminator
 class ModelG(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.decoder_size = INPUT_SIZE // 4 # upsample twice * 2dim (W, H)
+        self.decoder_size = INPUT_SIZE // 4  # upsample twice * 2dim (W, H)
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(Z_SIZE, self.decoder_size ** 2 * 128)
         )
@@ -254,6 +241,14 @@ class ModelG(torch.nn.Module):
             torch.nn.LeakyReLU(),
 
             torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=32),
+            torch.nn.LeakyReLU(),
+
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=32),
+            torch.nn.LeakyReLU(),
+
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=32),
             torch.nn.LeakyReLU(),
 
@@ -277,17 +272,20 @@ class ModelG(torch.nn.Module):
         y_prim = self.decoder.forward(z_2d)
         return y_prim
 
+
 model_E = ModelE().to(DEVICE)
 model_D = ModelD().to(DEVICE)
 model_G = ModelG().to(DEVICE)
+
 
 def get_param_count(model):
     params = list(model.parameters())
     result = 0
     for param in params:
-        count_param = np.prod(param.size()) # size[0] * size[1] ...
+        count_param = np.prod(param.size())  # size[0] * size[1] ...
         result += count_param
     return result
+
 
 print(f'model_D params: {get_param_count(model_D)}')
 print(f'model_G params: {get_param_count(model_G)}')
@@ -300,7 +298,6 @@ metrics = {}
 for stage in ['train']:
     for metric in ['loss', 'loss_g', 'loss_d', 'loss_gang', 'loss_const', 'loss_tid']:
         metrics[f'{stage}_{metric}'] = []
-
 
 for epoch in range(1, 500):
     metrics_epoch = {key: [] for key in metrics.keys()}
@@ -319,7 +316,7 @@ for epoch in range(1, 500):
             g_s = model_G.forward(z_s)
             g_t = model_G.forward(z_t)
 
-            z_z_s = model_E.forward(g_s) # Maybe remove detach()
+            z_z_s = model_E.forward(g_s)
 
             for p in model_D.parameters():
                 p.requires_grad = False
@@ -329,9 +326,9 @@ for epoch in range(1, 500):
 
             # 0 - fake_source, 1 -fake_target, 2-real_target
             loss_gang = -torch.mean(torch.log(y_g_s[:, 2] + 1e-8)) - torch.mean(torch.log(y_g_t[:, 2] + 1e-8))
-            loss_const = torch.mean((z_s-z_z_s)**2)
-            loss_tid = torch.mean((x_t-g_t)**2)
-            loss_g = loss_gang + COEF_ALPHA*loss_const + COEF_BETA*loss_tid
+            loss_const = torch.mean((z_s - z_z_s) ** 2)
+            loss_tid = torch.mean((x_t - g_t) ** 2)
+            loss_g = loss_gang + COEF_ALPHA * loss_const + COEF_BETA * loss_tid
             loss_g.backward()
             optimizer_G.step()
             optimizer_G.zero_grad()
@@ -367,7 +364,6 @@ for epoch in range(1, 500):
                 metrics_epoch[f'{stage}_loss_g'].append(loss_g.cpu().item())
                 metrics_epoch[f'{stage}_loss_d'].append(loss_d.cpu().item())
         n += 1
-
 
     metrics_strs = []
     for key in metrics_epoch.keys():
@@ -416,5 +412,3 @@ for epoch in range(1, 500):
         if np.isnan(metrics[f'train_loss'][-1]):
             exit()
         plt.savefig(f'{RUN_PATH}/plt-{epoch}.png')
-
-
