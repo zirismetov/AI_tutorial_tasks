@@ -41,8 +41,8 @@ parser.add_argument('-z_size', default=128, type=int)
 
 parser.add_argument('-discriminator_n', default=1, type=int)
 
-parser.add_argument('-coef_alpha', default=10, type=float)
-parser.add_argument('-coef_beta', default=10, type=float)
+parser.add_argument('-coef_alpha', default=20, type=float)
+parser.add_argument('-coef_beta', default=20, type=float)
 parser.add_argument('-data_path', default="../data/horse-zebra", type=str)
 parser.add_argument('-is_debug', default=True, type=lambda x: (str(x).lower() == 'true'))
 
@@ -57,7 +57,7 @@ DEVICE = 'cuda'
 MAX_LEN = args.samples_per_class
 CHARS_INCLUDE = args.chars_include  # '' = include all
 IS_DEBUG = args.is_debug
-INPUT_SIZE = 256
+INPUT_SIZE = 128
 
 COEF_ALPHA = args.coef_alpha
 COEF_BETA = args.coef_beta
@@ -66,9 +66,9 @@ DISCRIMINATOR_N = args.discriminator_n
 
 if not torch.cuda.is_available() or IS_DEBUG:
     IS_DEBUG = True
-    MAX_LEN = 300  # per class for debugging
+    MAX_LEN = 500  # per class for debugging
     DEVICE = 'cpu'
-    BATCH_SIZE = 66
+    BATCH_SIZE = 5
 
 if len(RUN_PATH):
     RUN_PATH = f'{int(time.time())}_{RUN_PATH}'
@@ -82,6 +82,7 @@ class DatasetHorse(torch.utils.data.Dataset):
         super().__init__()
         path_dataset = '../data/horse.pkl'
         self.transform = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((128, 128)),
             torchvision.transforms.ToTensor()
         ])
         self.horse_images = torchvision.datasets.ImageFolder(path_root_horse, transform=self.transform)
@@ -101,6 +102,7 @@ class DatasetZebra(torch.utils.data.Dataset):
         super().__init__()
         path_dataset = '../data/zebra.pkl'
         self.transform = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((128, 128)),
             torchvision.transforms.ToTensor()
         ])
         self.zebra_images = torchvision.datasets.ImageFolder(path_root_zebra, transform=self.transform)
