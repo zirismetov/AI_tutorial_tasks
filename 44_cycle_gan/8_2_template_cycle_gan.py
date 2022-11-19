@@ -220,22 +220,29 @@ class ModelD(torch.nn.Module): # Discriminator
             torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1), # B, 64, 4,4
 
             torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
             torch.nn.BatchNorm2d(num_features=64),
             torch.nn.LeakyReLU(),
 
+            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=64),
+            torch.nn.LeakyReLU(),
+
+            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 64, 4,4
+
+            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+            torch.nn.BatchNorm2d(num_features=64),
+            torch.nn.LeakyReLU(),
+
+            torch.nn.Conv2d(in_channels=64, out_channels=1, kernel_size=3, stride=1, padding=1),
+
             torch.nn.AdaptiveMaxPool2d(output_size=(1,1)) # B, 64, 1, 1
-        )
-        self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(in_features=64, out_features=1)
         )
 
     def forward(self, x):
         x_enc = self.encoder.forward(x)
-        x_enc_flat = x_enc.squeeze() # B, 64, 1, 1, => B, 64
-        y_prim = self.mlp.forward(x_enc_flat)
+        y_prim = x_enc.squeeze() # B, 64, 1, 1, => B, 64
         return y_prim
 
 
@@ -273,19 +280,28 @@ class ModelG(torch.nn.Module):
             torch.nn.BatchNorm2d(num_features=8),
             torch.nn.Conv2d(in_channels=8, out_channels=1, kernel_size=3, stride=1, padding=1),
 
-            torch.nn.Sigmoid() # TODO
+            torch.nn.Sigmoid()
         )
-        #TODO
+        self.encoder = ModelE()
 
-    def forward(self, z):
-        # TODO
+    def forward(self, x):
+        z = self.encoder.forward(x)
         z_flat = self.mlp.forward(z)
         z_2d = z_flat.view(z.size(0), 128, self.decoder_size, self.decoder_size)
         y_prim = self.decoder.forward(z_2d) # (B, 1, 28, 28)
         return y_prim
 
-# TODO models
-# TODO optimizers
+model_G_s_t = ModelG().to(DEVICE)
+model_G_t_s = ModelG().to(DEVICE)
+
+model_D_s = ModelD().to(DEVICE)
+model_D_t = ModelD().to(DEVICE)
+
+params_G = itertools.chain(model_G_s_t.parameters(), model_G_t_s.parameters())
+params_D = itertools.chain(model_D_s.parameters(), model_D_t.parameters())
+
+opt_G = torch.optim.Adam(params_G, lr=args.learning_rate_g)
+opt_D = torch.optim.Adam(params_D, lr=args.learning_rate_d)
 
 metrics = {}
 for stage in ['train']:
@@ -313,16 +329,54 @@ for epoch in range(1, EPOCHS):
         x_t = x_t.to(DEVICE)
         x_s_prev = x_s
 
+        opt_G.zero_grad()
+        opt_D.zero_grad()
         if n % 2 == 0:
-            # TODO generator pass
-            loss_g = 0
-            loss_c = 0
+            for param in params_D:
+                param.requires_grad = False
+            g_t = model_G_s_t.forward(x_s)
+            g_s = model_G_t_s.forward(g_t)
+
+            y_g_t = model_D_t.forward(g_t) # 1 - real, 0 - fake
+            y_g_s = model_D_s.forward(g_s) # 1 - real, 0 - fake
+
+            loss_g_t = torch.mean(torch.abs(y_g_t- 1.0))
+            loss_g_s = torch.mean(torch.abs(y_g_s - 1.0))
+            loss_g = loss_g_t + loss_g_s
+            loss_c_s = torch.mean(torch.abs(g_s - x_s)) * args.coef_s
+
+            g_s_prim = model_G_t_s.forward(x_t)
+            g_t_prim = model_G_s_t.forward(g_s_prim)
+            loss_c_t = torch.mean(torch.abs(g_t_prim - x_t)) * args.coef_t
+            loss_c = loss_c_t + loss_c_s
+
+            loss = loss_c + loss_g
+            loss.backward()
+            opt_G.step()
 
             metrics_epoch[f'{stage}_loss_g'].append(loss_g.cpu().item())
             metrics_epoch[f'{stage}_loss_c'].append(loss_c.cpu().item())
         else:
-            # TODO discriminator pass
-            loss_d = 0
+            for param in params_D:
+                param.requires_grad = True
+            g_t = model_G_s_t.forward(x_s)
+            g_s = model_G_t_s.forward(g_t)
+
+            y_g_t = model_D_t.forward(g_t.detach())  # 1 - real, 0 - fake
+            y_g_s = model_D_s.forward(g_s.detach())  # 1 - real, 0 - fake
+
+            y_x_t = model_D_t.forward(x_t)  # 1 - real, 0 - fake
+            y_x_s = model_D_s.forward(x_s)
+
+            loss_g_t = torch.mean(y_g_t**2)
+            loss_g_s = torch.mean(y_g_s ** 2)
+            loss_x_t = torch.mean((y_x_t - 1.0) ** 2)
+            loss_x_s = torch.mean((y_x_s - 1.0) ** 2)
+
+
+            loss_d = loss_g_t + loss_g_s + loss_x_t + loss_x_s
+            loss_d.backward()
+            opt_D.step()
 
             metrics_epoch[f'{stage}_loss_d'].append(loss_d.cpu().item())
         n += 1
