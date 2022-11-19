@@ -41,8 +41,8 @@ parser.add_argument('-z_size', default=128, type=int)
 
 parser.add_argument('-discriminator_n', default=1, type=int)
 
-parser.add_argument('-coef_alpha', default=20, type=float)
-parser.add_argument('-coef_beta', default=20, type=float)
+parser.add_argument('-coef_alpha', default=15, type=float)
+parser.add_argument('-coef_beta', default=2, type=float)
 parser.add_argument('-data_path', default="../data/horse-zebra", type=str)
 parser.add_argument('-is_debug', default=True, type=lambda x: (str(x).lower() == 'true'))
 
@@ -76,7 +76,7 @@ if len(RUN_PATH):
         shutil.rmtree(RUN_PATH)
     os.makedirs(RUN_PATH)
 
-DEVICE = 'cuda'
+# DEVICE = 'cuda'
 
 class DatasetHorse(torch.utils.data.Dataset):
     def __init__(self, path_root_horse):
@@ -127,7 +127,6 @@ data_loader_source = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     drop_last=(len(dataset_source_horse) % BATCH_SIZE < 12),
-    # num_workers=(8 if not IS_DEBUG else 0)
 )
 
 data_loader_target = torch.utils.data.DataLoader(
@@ -135,7 +134,6 @@ data_loader_target = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     drop_last=(len(dataset_target_zebra) % BATCH_SIZE < 12),
-    # num_workers=(8 if not IS_DEBUG else 0)
 )
 
 
@@ -143,45 +141,48 @@ class ModelE(torch.nn.Module): # Encoder
     def __init__(self):
         super().__init__()
 
-        self.encoder = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=8),
-            torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 4, 14, 14
-
-            torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=32),
-            torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 32, 7, 7
-
-            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=32),
-            torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
-
-            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=32),
-            torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
-
-            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=64),
-            torch.nn.LeakyReLU(),
-            torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 64, 4,4
-
-            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=64),
-            torch.nn.LeakyReLU(),
-
-            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=64),
-            torch.nn.LeakyReLU(),
-
-            torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-            torch.nn.BatchNorm2d(num_features=64),
-            torch.nn.LeakyReLU(),
-            torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))  # B, 64, 1, 1
-        )
+        self.encoder = torchvision.models.vgg16_bn(pretrained=True)
+        for param in self.model.parameters():
+            param.requires_grad = False
+        # torch.nn.Sequential(
+        #     torch.nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=8),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 4, 14, 14
+        #
+        #     torch.nn.Conv2d(in_channels=8, out_channels=32, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=32),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 32, 7, 7
+        #
+        #     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=32),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
+        #
+        #     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=32),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),
+        #
+        #     torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=64),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.MaxPool2d(kernel_size=4, stride=2, padding=1),  # B, 64, 4,4
+        #
+        #     torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=64),
+        #     torch.nn.LeakyReLU(),
+        #
+        #     torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=64),
+        #     torch.nn.LeakyReLU(),
+        #
+        #     torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+        #     torch.nn.BatchNorm2d(num_features=64),
+        #     torch.nn.LeakyReLU(),
+        #     torch.nn.AdaptiveMaxPool2d(output_size=(1, 1))  # B, 64, 1, 1
+        # )
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(in_features=64, out_features=Z_SIZE),
             torch.nn.Sigmoid()
@@ -335,7 +336,7 @@ for epoch in range(1, 500):
             g_s = model_G.forward(z_s)
             g_t = model_G.forward(z_t)
 
-            z_z_s = model_E.forward(g_s)
+            z_z_s = model_E.forward(g_t)
 
             for p in model_D.parameters():
                 p.requires_grad = False
@@ -345,8 +346,8 @@ for epoch in range(1, 500):
 
             # 0 - fake_source, 1 -fake_target, 2-real_target
             loss_gang = -torch.mean(torch.log(y_g_s[:, 2] + 1e-8)) - torch.mean(torch.log(y_g_t[:, 2] + 1e-8))
-            loss_const = torch.mean((z_s - z_z_s) ** 2)
-            loss_tid = torch.mean((x_t - g_t) ** 2)
+            loss_const = torch.mean(torch.abs(z_s - z_z_s))
+            loss_tid = torch.mean(torch.abs(x_t - g_t))
             loss_g = loss_gang + COEF_ALPHA * loss_const + COEF_BETA * loss_tid
             loss_g.backward()
             optimizer_G.step()
