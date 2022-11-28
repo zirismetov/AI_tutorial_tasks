@@ -68,7 +68,7 @@ if not torch.cuda.is_available() or IS_DEBUG:
     IS_DEBUG = True
     MAX_LEN = 800  # per class for debugging
     DEVICE = 'cpu'
-    BATCH_SIZE = 8
+    BATCH_SIZE = 6
 
 if len(RUN_PATH):
     RUN_PATH = f'{int(time.time())}_{RUN_PATH}'
@@ -304,7 +304,7 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         shuffle=True,
         drop_last=(len(dataset_source_horse) % BATCH_SIZE < 12),
-        num_workers=8
+        # num_workers=1
     )
 
     data_loader_target = torch.utils.data.DataLoader(
@@ -312,7 +312,7 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         shuffle=True,
         drop_last=(len(dataset_target_zebra) % BATCH_SIZE < 12),
-        num_workers=8
+        # num_workers=1
 
     )
     model_E = ModelE().to(DEVICE)
@@ -341,7 +341,7 @@ if __name__ == "__main__":
         for metric in ['loss', 'loss_g', 'loss_d', 'loss_gang', 'loss_const', 'loss_tid']:
             metrics[f'{stage}_{metric}'] = []
 
-    for epoch in range(1, 500):
+    for epoch in range(0, 500):
         metrics_epoch = {key: [] for key in metrics.keys()}
 
         stage = 'train'
@@ -418,7 +418,7 @@ if __name__ == "__main__":
             metrics_strs.append(f'{key}: {round(value, 2)}')
 
         print(f'epoch: {epoch} {" ".join(metrics_strs)}')
-        if epoch % 10 == 0:
+        if epoch % 5 == 0:
             plt.clf()
 
             plt.subplot(222)  # row col idx
@@ -451,6 +451,7 @@ if __name__ == "__main__":
             plt.tight_layout(pad=0.5)
 
             if len(RUN_PATH) == 0:
+                plt.savefig(f'..\\data\\plots\\dtn_hz_{epoch}.png')
                 plt.show()
             else:
                 if np.isnan(metrics[f'train_loss'][-1]):
