@@ -308,7 +308,8 @@ for stage in ['train']:
     for metric in [
         'loss_g',
         'loss_d',
-        'loss_c'
+        'loss_c',
+        'loss_i'
     ]:
         metrics[f'{stage}_{metric}'] = []
 
@@ -340,20 +341,34 @@ for epoch in range(1, EPOCHS):
             y_g_t = model_D_t.forward(g_t) # 1 - real, 0 - fake
             y_g_s = model_D_s.forward(g_s) # 1 - real, 0 - fake
 
-            loss_g_t = torch.mean(torch.abs(y_g_t- 1.0))
-            loss_g_s = torch.mean(torch.abs(y_g_s - 1.0))
+            loss_g_t = -torch.mean(y_g_t)
+            loss_g_s = -torch.mean(y_g_s)
             loss_g = loss_g_t + loss_g_s
             loss_c_s = torch.mean(torch.abs(g_s - x_s)) * args.coef_s
 
             g_s_prim = model_G_t_s.forward(x_t)
             g_t_prim = model_G_s_t.forward(g_s_prim)
             loss_c_t = torch.mean(torch.abs(g_t_prim - x_t)) * args.coef_t
+
+            y_g_t_prim = torch.mean(torch.abs(g_t_prim - 1.0))
+            y_g_s_prim = torch.mean(torch.abs(g_s_prim - 1.0))
+            loss_g_t_prim = -torch.mean(y_g_t_prim)
+            loss_g_s_prim = -torch.mean(y_g_s_prim)
+            loss_g += loss_g_t_prim + loss_g_s_prim
+
             loss_c = loss_c_t + loss_c_s
 
-            loss = loss_c + loss_g
+            i_t = model_G_s_t.forward(x_t)
+            i_s = model_G_t_s.forward(x_s)
+            loss_i_t = torch.mean(torch.abs(i_t - x_t)) * args.coef_i
+            loss_i_s = torch.mean(torch.abs(i_s - x_s)) * args.coef_i
+            loss_i = loss_i_t + loss_i_s
+
+            loss = loss_c + loss_g + loss_i
             loss.backward()
             opt_G.step()
 
+            metrics_epoch[f'{stage}_loss_i'].append(loss_i.cpu().item())
             metrics_epoch[f'{stage}_loss_g'].append(loss_g.cpu().item())
             metrics_epoch[f'{stage}_loss_c'].append(loss_c.cpu().item())
         else:
@@ -368,14 +383,14 @@ for epoch in range(1, EPOCHS):
             y_x_t = model_D_t.forward(x_t)  # 1 - real, 0 - fake
             y_x_s = model_D_s.forward(x_s)
 
-            loss_g_t = torch.mean(y_g_t**2)
-            loss_g_s = torch.mean(y_g_s ** 2)
-            loss_x_t = torch.mean((y_x_t - 1.0) ** 2)
-            loss_x_s = torch.mean((y_x_s - 1.0) ** 2)
+            loss_g_t = torch.mean(y_g_t) - torch.mean(y_x_t)
+            loss_g_s = torch.mean(y_g_s) - torch.mean(y_x_s)
 
-
-            loss_d = loss_g_t + loss_g_s + loss_x_t + loss_x_s
+            loss_d = loss_g_t + loss_g_s
             loss_d.backward()
+            torch.nn.utils.clip_grad_norm_(parameters=params_D,
+                                           max_norm=1e-2,
+                                           norm_type=1)
             opt_D.step()
 
             metrics_epoch[f'{stage}_loss_d'].append(loss_d.cpu().item())
